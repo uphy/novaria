@@ -18,6 +18,10 @@ jobs:
     # プレビューを立てるのはこのリポジトリのブランチの PR だけ（ci.yml の preview と同じ条件）
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # ci.yml の preview と同じグループ。プレビューが上げている途中なら、終わるのを待ってから消す
+    concurrency:
+      group: preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

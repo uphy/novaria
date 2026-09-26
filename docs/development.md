@@ -48,7 +48,7 @@ main には直接 push せず、PR を通す。main に入ると `.github/workfl
    - `preview` … PR 専用の Worker `novaria-pr-<番号>` に公開し、URL を PR にコメントする。ランキングの置き場も PR ごとに別の D1 を作るので、本番の順位表は汚れない。fork からの PR では secrets が無いので走らない
    - `check` … 上の検証がすべて成功したときだけ成功する。ブランチ保護の必須 check にはこれを指定する
 3. `src/render/`・`index.html`・CSS に触れた変更は、プレビュー URL をスマホで開いて確かめる。メニュー左下のビルド識別子（日付と commit）で、いま開いている版が分かる
-4. squash merge する。PR を閉じると `preview-cleanup.yml` がプレビューの Worker と D1 を消す
+4. squash merge する。PR を閉じると `preview-cleanup.yml` がプレビューの Worker と D1 を消す（プレビューを上げている途中なら終わるのを待ってから消す。閉じたあとに走り出したプレビューは何も上げない）
 
 squash merge なので、main のコミットは 1 PR につき 1 つになる。PR タイトルにも「何をなぜ変えたか」を書く。
 

@@ -112,9 +112,16 @@ jobs:
   # スマホで実機確認してから merge するために使う。URL は新しい版が配信されてから PR のコメントに書き、
   # push のたびに前のコメントを消して最新の commit の下に書き直す。
   # fork からの PR には secrets が渡らず Cloudflare に上げられないので、このリポジトリのブランチの PR だけで走らせる
+  #
+  # push の直後に merge すると、preview-cleanup.yml が片付け終えたあとでこのジョブが D1 と Worker を作り、
+  # 誰にも消されずに残っていた。片付けと同じ concurrency のグループに入れて同時に走らないようにし、
+  # 上げる直前に PR がまだ開いているかを見る（片付けが先に済んでいたら何もしない）
   preview:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    concurrency:
+      group: preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
@@ -132,8 +139,17 @@ jobs:
         env:
           # checkout は PR のマージコミットなので、メニューに出す commit は head のものを渡す
           BUILD_COMMIT: ${{ github.event.pull_request.head.sha }}
+      - name: PR がまだ開いているかを見る
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          state=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq .state)
+          echo "PR の状態: $state"
+          echo "open=$([ "$state" = open ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - name: プレビュー版をアップロード
         id: upload
+        if: steps.state.outputs.open == 'true'
         run: |
           node tools/prepare-preview.mjs
           node tools/prepare-score-database.mjs .wrangler-preview.json .wrangler-preview.json
@@ -145,6 +161,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: 新しい版が配信されるまで待つ
+        if: steps.state.outputs.open == 'true'
         env:
           URL: ${{ steps.upload.outputs.url }}
           SHA: ${{ github.event.pull_request.head.sha }}
@@ -161,6 +178,7 @@ jobs:
           echo "::error::5 分待っても新しい版が配信されない"
           exit 1
       - name: PR にプレビュー URL をコメント
+        if: steps.state.outputs.open == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           URL: ${{ steps.upload.outputs.url }}

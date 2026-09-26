@@ -1,0 +1,102 @@
+/**
+ * 遊ぶ人向けのお知らせ（何が変わったか）。
+ *
+ * commit から作らず、ここに手で書く。commit のメッセージは開発の言葉で長く、
+ * 遊ぶ人に関係のない入れ替え（CI や文書だけの変更）も多い。
+ * 遊ぶ人が気づく変更を入れた PR で 1 件足す。新しいものを先頭に置く。
+ *
+ * 知らせるのは、この端末が最後に読んだものより新しい項目があるときだけ（`novaria.news.v1`）。
+ * デプロイのたびではなく、項目を足したときだけ知らせたいので、ビルドの id ではなく項目の id で見る
+ */
+export interface NewsItem {
+  /** 既読の目印。日付に、同じ日の 2 件目からは -2 などを付ける。一度出したら変えない */
+  readonly id: string;
+  /** 画面に出す日付 */
+  readonly date: string;
+  readonly title: string;
+  /** 1〜3 行。遊ぶ人の言葉で書く */
+  readonly lines: readonly string[];
+}
+
+export const NEWS: readonly NewsItem[] = [
+  {
+    id: '2026-09-26',
+    date: '2026.09.26',
+    title: 'CPU の「つよい」が手ごわくなった',
+    lines: [
+      '高く積もった列を、縦にそろえて崩しにくるようになった。',
+      '1 本だけ高くなって自滅することが減り、攻め勝たないと倒せない。',
+      '「ふつう」も少しだけ粘る。',
+    ],
+  },
+  {
+    id: '2026-09-24',
+    date: '2026.09.24',
+    title: '対戦の決着を見せるようにした',
+    lines: [
+      '決着の瞬間に止まって、勝てば花火、負ければ暗転。',
+      '相手ごとの連勝と、「あと何段だった」が結果に出る。',
+      '「記録」は自己ベスト・対戦・ランキングをタブで見る画面にした。',
+    ],
+  },
+];
+
+/**
+ * 検証のあいだだけ、既読かどうかに関係なく毎回知らせる（見た目をプレビューで確かめるため）。
+ * 本番へ出す前に false に戻す
+ */
+const ALWAYS_ANNOUNCE = false;
+
+const KEY = 'novaria.news.v1';
+
+function readSeen(): string | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(KEY) ?? 'null') as { seen?: unknown } | null;
+    return typeof raw?.seen === 'string' ? raw.seen : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSeen(id: string): void {
+  try {
+    localStorage.setItem(KEY, JSON.stringify({ seen: id }));
+  } catch {
+    /* 残せなくても遊びは止めない。次に開いたときにまた知らせるだけ */
+  }
+}
+
+/** 検証で毎回知らせるとき、この起動のあいだに読んだか */
+let readThisSession = false;
+
+/**
+ * まだ読んでいない項目の数。
+ * 目印の無い端末は、初めて開いた人ならいま出ているものを全部読んだことにする（昔の変更を新しいとは言わない）。
+ * 前から遊んでいる人（`returning`）には、いちばん新しい 1 件を知らせる
+ */
+export function unreadNews(returning: boolean): number {
+  if (NEWS.length === 0) return 0;
+  if (ALWAYS_ANNOUNCE) return readThisSession ? 0 : 1;
+  let seen = readSeen();
+  if (seen === null) {
+    seen = returning ? (NEWS[1]?.id ?? '') : NEWS[0].id;
+    writeSeen(seen);
+  }
+  return countAfter(seen);
+}
+
+/** 読んだ目印より新しい項目の数。id は日付から始まるので、文字列の大小で比べられる */
+export function countAfter(seen: string): number {
+  return NEWS.filter((n) => n.id > seen).length;
+}
+
+/** お知らせを開いたら、いま出ているものを全部読んだことにする */
+export function markNewsRead(): void {
+  readThisSession = true;
+  if (NEWS.length > 0) writeSeen(NEWS[0].id);
+}
+
+/** 読む前に未読だった項目か（開いた画面で印を付けるため、開く前に数えておく） */
+export function isUnread(item: NewsItem, unreadBefore: number): boolean {
+  return NEWS.indexOf(item) < unreadBefore;
+}

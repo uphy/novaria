@@ -1,0 +1,2297 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1"
+    />
+    <meta name="theme-color" content="#05030f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="NOVARIA" />
+    <meta name="description" content="降ってくる隕石を打ち上げて惑星を守るアクションパズル" />
+    <!-- iOS は manifest の icons を見ないので、ホーム画面用の絵をここで渡す -->
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="icon" href="/icons/icon-192.png" />
+    <title>NOVARIA</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        /*
+          空の色（母星ノヴァリア）。大気圏まで積もると main.ts が中ほどを赤寄りに差し替え、
+          惑星めぐりでは惑星ごとの色に差し替える（src/render/theme.ts の PLANET_LOOKS）
+        */
+        --sky-top: #05030f;
+        --sky-mid: #0b0722;
+        --sky-bottom: #170d2e;
+        /*
+          ここから下は src/render/theme.ts の LOOKS / UI と同じ値。
+          メニューの絵をゲームの盤面と同じ色で描くために写してある。片方を変えたらもう片方も直す
+        */
+        --ground: #3a2a55;
+        --ground-edge: #6a4fa0;
+        --accent: #6de3ff;
+        --accent-deep: #1b7fc4;
+        --fire-light: #ff7a5c;
+        --fire-dark: #d92b2b;
+        --fire-ink: #5a0f0f;
+        --h2o-light: #6fd6ff;
+        --h2o-dark: #1f7fd6;
+        --h2o-ink: #0b3a63;
+        --soil-light: #ffb45c;
+        --soil-dark: #c8701a;
+        --soil-ink: #5a3208;
+        /* 柄。tile.ts の drawGlyph と同じ形を SVG で写した（滴・三角・四角） */
+        --glyph-h2o: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 82 Q82 56 50 18 Q18 56 50 82Z' fill='%230b3a63'/%3E%3C/svg%3E");
+        --glyph-fire: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath d='M50 18 L80 74 L20 74Z' fill='%235a0f0f'/%3E%3C/svg%3E");
+        --glyph-soil: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect x='24' y='24' width='52' height='52' fill='%235a3208'/%3E%3C/svg%3E");
+      }
+      /*
+        空は canvas ではなく CSS で塗る。全画面のグラデーションを毎フレーム canvas に
+        塗り直すと、スマホでは 1 フレーム 40ms 以上かかって操作が遅れる。
+        canvas は透明のまま、盤面と隕石だけを描く
+      */
+      body {
+        background: linear-gradient(
+          180deg,
+          var(--sky-top) 0%,
+          var(--sky-mid) 55%,
+          var(--sky-bottom) 100%
+        );
+      }
+      * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        color: #fff;
+        font-family: 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif;
+        overscroll-behavior: none;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #game {
+        display: block;
+        position: fixed;
+        inset: 0;
+        z-index: 1;
+        touch-action: none;
+      }
+      #game[hidden] {
+        display: none;
+      }
+      /*
+        ゲーム画面の背景（星空・星雲・惑星の地平線）。canvas の後ろに敷く静かな DOM で、
+        一度描いたら塗り直さない。canvas に星を毎フレーム描くのをやめ、ここに移した。
+        will-change で別の面にしておくのは、滅亡が近いと body の空（--sky-mid）が
+        毎フレーム塗り替わるため。同じ面にいると星と地平線まで一緒に塗り直しになる。
+        星も地平線も animation を付けない（遊んでいるあいだ動くのは canvas だけにする）
+      */
+      #backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 0;
+        overflow: hidden;
+        pointer-events: none;
+        will-change: transform;
+      }
+      #game[hidden] ~ #backdrop,
+      #game[hidden] ~ #alarm {
+        display: none;
+      }
+      #backdrop .field-stars {
+        position: absolute;
+        inset: 0;
+      }
+      /*
+        惑星の地平線。盤面の下辺（--ground-y は View.resize が渡す）に頂が来る、画面より
+        ずっと大きい正円。メニューの .planet と同じ描き方で、色は惑星ごとに View.setPlanet が渡す
+      */
+      #backdrop .horizon {
+        position: absolute;
+        left: 50%;
+        top: calc(var(--ground-y, 88vh) - 6px);
+        width: 320vw;
+        height: 320vw;
+        transform: translateX(-50%);
+        border-radius: 50%;
+        background:
+          radial-gradient(40% 3% at 50% 0%, color-mix(in srgb, var(--ground-edge) 55%, transparent), transparent 90%),
+          linear-gradient(180deg, var(--ground) 0%, color-mix(in srgb, var(--ground) 45%, #05030f) 2.5%, #05030f 9%);
+        box-shadow:
+          0 -1px 4px color-mix(in srgb, var(--ground-edge) 80%, #fff),
+          0 -10px 34px color-mix(in srgb, var(--ground-edge) 45%, transparent),
+          0 -40px 110px color-mix(in srgb, var(--ground-edge) 22%, transparent);
+      }
+      /*
+        滅亡が迫っている赤い縁。canvas の上に重ね、明るさだけを CSS で揺らす。
+        全画面の赤を canvas に毎フレーム塗ると重いので、ぼかした縁は 1 度だけ描いて合成に回す
+      */
+      #alarm {
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        pointer-events: none;
+        opacity: 0;
+        box-shadow:
+          inset 0 0 0 2px rgba(255, 59, 92, 0.55),
+          inset 0 0 14vmin rgba(255, 30, 70, 0.5);
+        transition: opacity 0.25s;
+      }
+      #alarm.on {
+        animation: alarm 0.6s ease-in-out infinite alternate;
+      }
+      @keyframes alarm {
+        from {
+          opacity: 0.35;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      /*
+        負けて惑星の明かりが落ちる（View.lightsOut）。警報は最後に 1 度強く光って消え、
+        地平線は暗く沈む。どちらも opacity だけを動かす
+      */
+      #alarm.last {
+        animation: alarm-last 1.1s ease-out forwards;
+      }
+      @keyframes alarm-last {
+        0% {
+          opacity: 1;
+        }
+        20% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 0;
+        }
+      }
+      /*
+        地平線そのものは画面の何倍も大きいので動かさず、画面と同じ大きさの暗い幕を上に重ねて
+        その opacity だけを上げる
+      */
+      #backdrop .veil {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, rgba(2, 1, 8, 0.55), rgba(2, 1, 8, 0.85) 70%);
+        opacity: 0;
+        transition: opacity 1.4s ease-in;
+      }
+      #backdrop.dusk .veil {
+        opacity: 1;
+      }
+      /* トップメニューはゲームの上に重ねるのではなく、canvas と入れ替わる別の画面 */
+      #menu {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+        z-index: 5;
+        /* 惑星の地平線（#menu .planet）は画面より広い楕円なので、はみ出しを切る */
+        overflow: hidden;
+      }
+      #menu.shown {
+        display: flex;
+      }
+      #overlay {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+        /* 止まった盤面の上に、暗い幕と細い走査線を重ねる。走査線は動かさない */
+        background:
+          repeating-linear-gradient(180deg, rgba(109, 227, 255, 0.035) 0 1px, transparent 1px 4px),
+          rgba(4, 2, 14, 0.8);
+        backdrop-filter: blur(6px);
+        z-index: 10;
+      }
+      #overlay .panel {
+        animation: page-in 0.22s ease-out both;
+      }
+      /*
+        結果の画面。見出しが判を押すように落ちてきて、数字の行が上から順に滑り込む。
+        動かすのは transform と opacity だけ
+      */
+      #overlay .result-panel h1 {
+        animation: stamp 0.42s cubic-bezier(0.2, 1.3, 0.4, 1) 0.08s both;
+      }
+      #overlay .result-panel table.result tr {
+        animation: row-in 0.32s ease-out both;
+      }
+      #overlay .result-panel table.result tr:nth-child(1) {
+        animation-delay: 0.3s;
+      }
+      #overlay .result-panel table.result tr:nth-child(2) {
+        animation-delay: 0.36s;
+      }
+      #overlay .result-panel table.result tr:nth-child(3) {
+        animation-delay: 0.42s;
+      }
+      #overlay .result-panel table.result tr:nth-child(4) {
+        animation-delay: 0.48s;
+      }
+      #overlay .result-panel table.result tr:nth-child(n + 5) {
+        animation-delay: 0.54s;
+      }
+      @keyframes stamp {
+        from {
+          opacity: 0;
+          transform: scale(1.7);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes row-in {
+        from {
+          opacity: 0;
+          transform: translateX(-14px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      /*
+        対戦の勝ち負け。見出しを大きくし、勝ちは金色で叩きつけて後ろで光を弾けさせ、
+        負けは上から落ちてきて一度だけ揺れる。どれも transform と opacity だけで動かす
+      */
+      #overlay .battle h1 {
+        font-size: 46px;
+        letter-spacing: 0.16em;
+        margin-right: -0.16em;
+      }
+      #overlay .battle.won h1 {
+        color: #ffe873;
+        animation: slam 0.5s cubic-bezier(0.2, 1.4, 0.35, 1) 0.05s both;
+      }
+      #overlay .battle.won h1::after {
+        background: linear-gradient(90deg, transparent, #ffe873, transparent);
+      }
+      #overlay .battle.lost h1 {
+        animation: sink 0.9s ease-out 0.05s both;
+      }
+      #overlay .battle .burst {
+        position: absolute;
+        left: 50%;
+        top: 30px;
+        width: 260px;
+        height: 260px;
+        margin-left: -130px;
+        border-radius: 50%;
+        pointer-events: none;
+        background: radial-gradient(circle, rgba(255, 232, 115, 0.55), rgba(255, 232, 115, 0.12) 45%, transparent 70%);
+        animation: burst 0.9s ease-out 0.18s both;
+      }
+      @keyframes slam {
+        from {
+          opacity: 0;
+          transform: scale(3);
+        }
+        60% {
+          opacity: 1;
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes sink {
+        0% {
+          opacity: 0;
+          transform: translateY(-48px);
+        }
+        35% {
+          opacity: 1;
+          transform: translateY(4px);
+        }
+        45% {
+          transform: translateX(-7px);
+        }
+        55% {
+          transform: translateX(6px);
+        }
+        65% {
+          transform: translateX(-4px);
+        }
+        75% {
+          transform: translateX(2px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes burst {
+        from {
+          opacity: 1;
+          transform: scale(0.2);
+        }
+        to {
+          opacity: 0;
+          transform: scale(1.8);
+        }
+      }
+      /* 決着の瞬間の余裕（「相手もあと 1 段だった」）。見出しのすぐ下に強めに出す */
+      #overlay .verdict {
+        margin: -6px 0 12px;
+        font-size: 15px;
+        font-weight: 800;
+        color: #fff;
+        animation: row-in 0.32s ease-out 0.22s both;
+      }
+      /* 連勝・連敗の札。勝ちは金、負けは赤 */
+      #overlay .streak {
+        display: inline-block;
+        margin: 0 0 14px;
+        padding: 4px 12px;
+        border-radius: 3px;
+        font-size: 13px;
+        font-weight: 900;
+        letter-spacing: 0.06em;
+        animation: stamp 0.36s cubic-bezier(0.2, 1.3, 0.4, 1) 0.6s both;
+      }
+      #overlay .won .streak {
+        color: #1d1600;
+        background: #ffe873;
+      }
+      #overlay .lost .streak {
+        color: #fff;
+        background: #ff3b5c;
+      }
+      /*
+        相手待ちのレーダー。円の目盛りの上を、扇の光が回る。
+        回すのは扇の 1 枚だけ（transform の rotate なので塗り直しは起きない）
+      */
+      .radar {
+        position: relative;
+        width: 128px;
+        height: 128px;
+        margin: 8px auto 18px;
+        border-radius: 50%;
+        overflow: hidden;
+        border: 1px solid rgba(109, 227, 255, 0.5);
+        background:
+          linear-gradient(rgba(109, 227, 255, 0.18), rgba(109, 227, 255, 0.18)) center / 100% 1px no-repeat,
+          linear-gradient(rgba(109, 227, 255, 0.18), rgba(109, 227, 255, 0.18)) center / 1px 100% no-repeat,
+          radial-gradient(
+            circle,
+            transparent 0 31%,
+            rgba(109, 227, 255, 0.22) 31.5% 32.5%,
+            transparent 33% 64%,
+            rgba(109, 227, 255, 0.22) 64.5% 65.5%,
+            transparent 66%
+          ),
+          rgba(6, 10, 30, 0.7);
+      }
+      .radar i {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background: conic-gradient(from 0deg, rgba(109, 227, 255, 0.5), transparent 28%);
+        animation: sweep 1.8s linear infinite;
+      }
+      .radar b {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 6px;
+        height: 6px;
+        margin: -3px 0 0 -3px;
+        border-radius: 50%;
+        background: var(--accent);
+      }
+      @keyframes sweep {
+        to {
+          transform: rotate(-360deg);
+        }
+      }
+      /*
+        新しい版を取り終えるまでの待ち（main.ts の onUpdateDownloading）。メニューの上に重ねて
+        触れないようにする。回すのはレーダーの扇だけ
+      */
+      #updating {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: rgba(4, 2, 14, 0.82);
+        backdrop-filter: blur(6px);
+        font-size: 15px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.86);
+      }
+      #updating[hidden],
+      #notice[hidden] {
+        display: none;
+      }
+      /* 新版に入れ替えた直後の小さな知らせ。画面の下に出て、しばらくして消える */
+      #notice {
+        position: fixed;
+        left: 50%;
+        bottom: max(56px, calc(env(safe-area-inset-bottom) + 40px));
+        z-index: 20;
+        transform: translateX(-50%);
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        color: #04202f;
+        background: var(--accent);
+        border-radius: 999px;
+        pointer-events: none;
+        animation: notice 3.2s ease both;
+      }
+      @keyframes notice {
+        0% {
+          opacity: 0;
+          transform: translateX(-50%) translateY(8px);
+        }
+        10%,
+        80% {
+          opacity: 1;
+          transform: translateX(-50%);
+        }
+        100% {
+          opacity: 0;
+          transform: translateX(-50%);
+        }
+      }
+      #overlay.shown {
+        display: flex;
+      }
+      /*
+        画面の箱。ゲーム画面の盤面と同じ意匠にする: 角の小さい暗いガラス、差し色の細い縁、
+        四隅の括弧。括弧は ::before に敷いた 8 本のグラデーション（線）で描く。動かないので
+        塗るのは 1 度だけ
+      */
+      .panel {
+        position: relative;
+        width: min(440px, 100%);
+        max-height: 100%;
+        overflow: auto;
+        background:
+          linear-gradient(180deg, rgba(109, 227, 255, 0.07), transparent 120px),
+          linear-gradient(180deg, rgba(16, 14, 44, 0.94), rgba(7, 6, 22, 0.94));
+        border: 1px solid rgba(109, 227, 255, 0.2);
+        border-radius: 6px;
+        padding: 24px 22px 26px;
+        text-align: center;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.65);
+      }
+      .panel::before {
+        --b: 18px;
+        --c: var(--accent);
+        content: '';
+        position: absolute;
+        inset: -1px;
+        pointer-events: none;
+        border-radius: 6px;
+        background:
+          linear-gradient(var(--c), var(--c)) top left / var(--b) 2px no-repeat,
+          linear-gradient(var(--c), var(--c)) top left / 2px var(--b) no-repeat,
+          linear-gradient(var(--c), var(--c)) top right / var(--b) 2px no-repeat,
+          linear-gradient(var(--c), var(--c)) top right / 2px var(--b) no-repeat,
+          linear-gradient(var(--c), var(--c)) bottom left / var(--b) 2px no-repeat,
+          linear-gradient(var(--c), var(--c)) bottom left / 2px var(--b) no-repeat,
+          linear-gradient(var(--c), var(--c)) bottom right / var(--b) 2px no-repeat,
+          linear-gradient(var(--c), var(--c)) bottom right / 2px var(--b) no-repeat;
+      }
+      /* トップは箱を持たない（空に文字が浮いている）ので括弧も付けない */
+      .panel.top::before {
+        content: none;
+      }
+      /* 負け・滅亡の画面は括弧を赤くする */
+      .panel.lost::before {
+        --c: #ff5b78;
+      }
+      .panel.won::before {
+        --c: #ffe873;
+      }
+      /*
+        見出しの上に添える英字の札。ゲーム画面の得点欄の見出し（■ SCORE）と同じ形にする。
+        字間は最後の 1 文字の右にも入るので、そのぶん戻して中央に見せる
+      */
+      .eyebrow {
+        margin: 0 -0.32em 6px 0;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.32em;
+        color: var(--accent);
+      }
+      .eyebrow::before {
+        content: '';
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin: 0 8px 2px 0;
+        background: currentColor;
+        vertical-align: middle;
+      }
+      .lost .eyebrow {
+        color: #ff5b78;
+      }
+      .won .eyebrow {
+        color: #ffe873;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 28px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+      }
+      /* 見出しの下の細い光の線。真ん中が明るく、左右へ消える */
+      .panel:not(.top) > h1::after,
+      .panel:not(.top) > .panel-body > h1::after {
+        content: '';
+        display: block;
+        width: 64px;
+        height: 2px;
+        margin: 10px auto 0;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      }
+      h1.over {
+        color: #ff5b78;
+      }
+      h1.over::after {
+        background: linear-gradient(90deg, transparent, #ff5b78, transparent) !important;
+      }
+      h1.win {
+        color: #6de3ff;
+      }
+      /* 対戦の強さ選びで、項目名の下に説明を小さく添える */
+      .menu-item .note {
+        display: block;
+        margin-top: 4px;
+        font-size: 12px;
+        font-weight: 600;
+        opacity: 0.66;
+      }
+      /* 強さの下に添える通算成績。説明より一段明るくして、数字だと分かるようにする */
+      .menu-item .tally {
+        display: block;
+        margin-top: 4px;
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+        font-weight: 700;
+        color: #6de3ff;
+        opacity: 0.8;
+      }
+      .sub {
+        margin: 0 0 18px;
+        font-size: 14px;
+        line-height: 1.7;
+        color: rgba(255, 255, 255, 0.72);
+      }
+      ul.menu {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      ul.menu li + li {
+        margin-top: clamp(10px, 2.6vh, 16px);
+      }
+      /*
+        項目は左寄せの札にする。左に番号（data-no）、右上に英字（data-en）を ::before / ::after で添える。
+        どちらも CSS の生成文字なので、ボタンの文字列（テストが見る textContent）は日本語のまま
+      */
+      ul.menu button {
+        position: relative;
+        text-align: left;
+        padding-left: 20px;
+        color: rgba(255, 255, 255, 0.9);
+        background:
+          linear-gradient(90deg, rgba(109, 227, 255, 0.07), rgba(109, 227, 255, 0.02) 60%),
+          rgba(10, 12, 34, 0.72);
+        border: 1px solid rgba(109, 227, 255, 0.16);
+        border-radius: 4px;
+      }
+      ul.menu button[data-no] {
+        padding-left: 58px;
+      }
+      ul.menu button[data-no]::before {
+        content: attr(data-no);
+        position: absolute;
+        left: 18px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+        font-size: 13px;
+        font-weight: 800;
+        color: rgba(109, 227, 255, 0.45);
+      }
+      ul.menu button[data-en]::after {
+        content: attr(data-en);
+        position: absolute;
+        right: 16px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.22em;
+        color: rgba(255, 255, 255, 0.32);
+      }
+      /* 説明の付いた項目では、英字を右上に寄せる（説明の行と重ねない） */
+      ul.menu button[data-en]:has(.note)::after {
+        top: 16px;
+        transform: none;
+      }
+      /*
+        いま選んでいる項目。左に光る棒を立て、差し色で塗る。キーボードの上下でも、指でも同じ見た目になる。
+        棒と塗りは背景の重ねで出す（要素を足さず、塗り直しは選び直したときだけ）
+      */
+      ul.menu button.on,
+      ul.menu button:hover {
+        color: #fff;
+        border-color: rgba(109, 227, 255, 0.55);
+        background:
+          linear-gradient(var(--accent), var(--accent)) left / 3px 100% no-repeat,
+          linear-gradient(90deg, rgba(109, 227, 255, 0.3), rgba(109, 227, 255, 0.06) 70%),
+          rgba(10, 12, 34, 0.8);
+      }
+      ul.menu button.on::before,
+      ul.menu button:hover::before {
+        color: var(--accent);
+      }
+      ul.menu button.on::after,
+      ul.menu button:hover::after {
+        color: var(--accent);
+      }
+      /*
+        メニューは画面いっぱいを使う。文字と項目が小さいとスマホで押しにくく、
+        余白ばかりが目立つ。画面の幅と高さに合わせて伸ばし、PC では上限で止める
+      */
+      #menu .panel {
+        width: min(520px, 100%);
+        padding: clamp(24px, 4vh, 34px) clamp(18px, 5vw, 26px) clamp(26px, 4.5vh, 36px);
+        /* 背の低い画面でも「もどる」が隠れないよう、中身だけをスクロールさせる */
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      #menu .panel-body {
+        min-height: 0;
+        overflow: auto;
+        margin-bottom: clamp(14px, 2.4vh, 22px);
+      }
+      #menu .panel-body > :last-child {
+        margin-bottom: 0;
+      }
+      #menu h1 {
+        margin-bottom: clamp(10px, 1.8vh, 16px);
+        font-size: clamp(34px, 11vw, 52px);
+      }
+      #menu .sub {
+        margin-bottom: clamp(18px, 3.4vh, 28px);
+        font-size: clamp(14px, 4vw, 17px);
+      }
+      #menu ul.menu button {
+        padding-top: clamp(16px, 2.4vh, 24px);
+        padding-bottom: clamp(16px, 2.4vh, 24px);
+        padding-right: 16px;
+        font-size: clamp(18px, 5.2vw, 23px);
+      }
+      #menu ul.how {
+        margin-bottom: clamp(18px, 3vh, 26px);
+        font-size: clamp(14px, 3.8vw, 16px);
+      }
+      #menu ul.how li {
+        padding: clamp(10px, 1.6vh, 14px) 14px;
+        margin-bottom: 8px;
+      }
+      #menu table.result th,
+      #menu table.result td {
+        padding: clamp(11px, 1.8vh, 16px) 4px;
+      }
+      #menu table.result td {
+        font-size: clamp(19px, 5.4vw, 24px);
+      }
+      #menu button:not(ul.menu button):not(.tab):not(.who-bar) {
+        padding: clamp(15px, 2.2vh, 20px);
+        font-size: clamp(17px, 4.8vw, 20px);
+      }
+
+      /*
+        ここから下はメニューの絵。メニューのあいだ canvas は隠れているので、
+        見えているものは全部 DOM と CSS で描く。canvas を描き始めないこと。
+        動かすのは transform と opacity だけにして、塗り直しが起きないようにする
+        （動く要素に box-shadow や text-shadow を付けると、毎フレームぼかしを描き直す）
+      */
+
+      /*
+        星。位置と色と瞬きの周期は `src/render/sky.ts` が決めて、ここに流し込む。
+        小さい星は層にまとめて 1 度だけ描き、以後は層ごと合成に回す（点ひとつずつを
+        要素にするより安い）。層を 3 枚に分けているのは、明るさの揺れる速さをずらして
+        空が一斉に明滅しないようにするため
+      */
+      /*
+        細かい星の層は画面 2 枚ぶんの高さにして、星の並びを縦に繰り返す（1 枚ぶんの絵を 2 回）。
+        包みの .drift が画面 1 枚ぶん下へ流れるあいだ、上の 1 枚が降りてきて継ぎ目なくつながる
+      */
+      #menu .stars {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: -100%;
+        height: 200%;
+        background-size: 100% 50%;
+        pointer-events: none;
+      }
+      /*
+        地平線に近いほど星を薄くする（空気の層が厚いほど星は見えにくい）。
+        切り抜きは流れない外側の .sky に掛ける。流れる層に掛けると、薄くなる帯まで一緒に流れる
+      */
+      #menu .sky {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        -webkit-mask-image: linear-gradient(
+          180deg,
+          #000 58%,
+          rgba(0, 0, 0, 0.4) 84%,
+          transparent 96%
+        );
+        mask-image: linear-gradient(180deg, #000 58%, rgba(0, 0, 0, 0.4) 84%, transparent 96%);
+      }
+      /*
+        星空はゆっくり下へ流れ続ける。トップのカタマリが上がり続けている見立て。
+        100 秒で画面 1 枚ぶん（1 秒に数 px）。動かすのはこの包みの transform だけ
+      */
+      #menu .drift {
+        position: absolute;
+        inset: 0;
+        animation: sky-scroll 100s linear infinite;
+      }
+      @keyframes sky-scroll {
+        from {
+          transform: none;
+        }
+        to {
+          transform: translateY(100%);
+        }
+      }
+      #menu .stars.s0 {
+        opacity: 0.46;
+      }
+      #menu .stars.s1 {
+        opacity: 0.66;
+      }
+      /*
+        明るさを揺らすのはこの層だけにする。層は画面ぜんぶの大きさなので、
+        animation を付けると合成用の面がそのぶん作られる。3 枚とも揺らすとメモリを食う。
+        きらめきは 1 つずつの星（.star）に任せれば足りる
+      */
+      #menu .stars.s2 {
+        animation: drift 5s ease-in-out -1.7s infinite alternate;
+      }
+      @keyframes drift {
+        from {
+          opacity: 0.62;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+
+      /* 1 つずつ違う周期で瞬く明るい星。位置・色・周期は sky.ts が inline で渡す */
+      #menu .bright {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      /* 明るい星の写しは画面 1 枚ぶん上。transform は演出が使うので、位置は top / bottom でずらす */
+      #menu .bright.echo {
+        top: -100%;
+        bottom: 100%;
+      }
+      #menu .star {
+        position: absolute;
+        width: var(--s);
+        height: var(--s);
+        margin: calc(var(--s) / -2) 0 0 calc(var(--s) / -2);
+        border-radius: 50%;
+        background: var(--c);
+        animation: blink 3s ease-in-out infinite alternate;
+      }
+      @keyframes blink {
+        from {
+          opacity: 0.28;
+          transform: scale(0.78);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1.16);
+        }
+      }
+      /* 大きい星には光の筋を十字に添える。線 2 本で済むので、ぼかしを作らなくてよい */
+      #menu .star.spike::before,
+      #menu .star.spike::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        opacity: 0.5;
+      }
+      #menu .star.spike::before {
+        width: calc(var(--s) * 8);
+        height: 1px;
+        margin: -0.5px 0 0 calc(var(--s) * -4);
+        background: linear-gradient(90deg, transparent, var(--c), transparent);
+      }
+      #menu .star.spike::after {
+        width: 1px;
+        height: calc(var(--s) * 8);
+        margin: calc(var(--s) * -4) 0 0 -0.5px;
+        background: linear-gradient(180deg, transparent, var(--c), transparent);
+      }
+
+      /* 流れ星。12 秒に 1 度だけ、1 秒かけて斜めに走る */
+      #menu .meteor {
+        position: absolute;
+        left: 84%;
+        top: 7%;
+        width: 2px;
+        height: 2px;
+        border-radius: 50%;
+        background: #fff;
+        opacity: 0;
+        animation: shoot 12s linear 4s infinite;
+      }
+      /* 尾は進む向きと逆に伸ばす。星の側が明るく、後ろへ消える */
+      #menu .meteor::before {
+        content: '';
+        position: absolute;
+        left: 1px;
+        top: 0;
+        width: 84px;
+        height: 1px;
+        transform-origin: 0 50%;
+        transform: rotate(-54deg);
+        background: linear-gradient(90deg, rgba(255, 255, 255, 0.75), transparent);
+      }
+      @keyframes shoot {
+        0% {
+          opacity: 0;
+          transform: translate(0, 0);
+        }
+        3% {
+          opacity: 1;
+        }
+        9% {
+          opacity: 0;
+          transform: translate(-42vw, 32vh);
+        }
+        100% {
+          opacity: 0;
+          transform: translate(-42vw, 32vh);
+        }
+      }
+
+      /*
+        惑星の地平線。画面より大きい正円の、上のところだけを見せる。
+        楕円にすると天辺だけが平らになって球に見えないので、幅と高さは同じにする。
+        地表は地平線に近いほど明るく、クレーターの影を落として、塗っただけの面に見せない。
+        大気は外へ広がる box-shadow の 3 段で出す。動かないので毎フレームのぼかしにはならない
+      */
+      #menu .planet {
+        position: absolute;
+        left: 50%;
+        /* 画面の下 14vh ぶんが地面になるよう、残りを画面の外へ沈める */
+        bottom: calc(14vh - 130vw);
+        z-index: 0;
+        width: 130vw;
+        height: 130vw;
+        transform: translateX(-50%);
+        border-radius: 50%;
+        /*
+          縁に線は引かない。線で囲むと切り紙に見えるうえ、楕円の border は
+          弧の頂点で太さが潰れて短い筋が出る。地面と空の境目は大気の光でぼかす
+        */
+        pointer-events: none;
+        background:
+          /*
+            クレーター。画面に出るのは楕円の上のほんの一部なので、そこに寄せて置く。
+            光は上の大気から来るので、凹みは上の壁が影になり、下の壁が明るくなる
+          */
+          radial-gradient(15.6% 2.65% at 21% 4.1%, rgba(0, 0, 0, 0.34), transparent 72%),
+          radial-gradient(14.4% 2.34% at 21% 5.2%, rgba(226, 214, 255, 0.11), transparent 72%),
+          radial-gradient(9.6% 1.72% at 64% 2.5%, rgba(0, 0, 0, 0.3), transparent 72%),
+          radial-gradient(8.4% 1.56% at 64% 3.3%, rgba(226, 214, 255, 0.1), transparent 72%),
+          radial-gradient(20.4% 3.12% at 84% 6.6%, rgba(0, 0, 0, 0.3), transparent 72%),
+          radial-gradient(19.2% 2.81% at 84% 8%, rgba(226, 214, 255, 0.09), transparent 72%),
+          radial-gradient(12% 2.18% at 44% 9.7%, rgba(0, 0, 0, 0.26), transparent 72%),
+          radial-gradient(10.8% 1.87% at 44% 10.6%, rgba(226, 214, 255, 0.08), transparent 72%),
+          /* 地平線に近いほど、大気に照らされて明るい */
+            radial-gradient(84% 11% at 50% 0%, rgba(150, 130, 215, 0.3), transparent 84%),
+          linear-gradient(180deg, #3b2b55 0%, #2e2144 12.5%, #1e1734 43%, #120d22 100%);
+        box-shadow:
+          0 -1px 5px rgba(190, 225, 255, 0.45),
+          0 -9px 26px rgba(120, 180, 255, 0.26),
+          0 -30px 72px rgba(80, 130, 230, 0.18);
+      }
+
+      /* 中身は星空と地平線の手前に置く */
+      #menu .panel {
+        position: relative;
+        z-index: 1;
+        animation: page-in 0.22s ease-out both;
+      }
+      /* 下位の画面は箱を残しつつ薄くして、後ろの星と地平線を透かす */
+      #menu .panel:not(.top) {
+        background: linear-gradient(180deg, rgba(23, 18, 58, 0.78), rgba(12, 8, 32, 0.78));
+      }
+      @keyframes page-in {
+        from {
+          opacity: 0;
+          transform: translateY(12px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      /* トップだけは箱をやめて、空の中に文字が浮いているようにする */
+      #menu .panel.top {
+        /* #menu の align-items: center を上書きして、画面の高さいっぱいを使う */
+        align-self: stretch;
+        justify-content: flex-start;
+        width: min(420px, 100%);
+        padding-top: clamp(12px, 4vh, 72px);
+        padding-bottom: clamp(18px, 3vh, 30px);
+        background: none;
+        border: 0;
+        box-shadow: none;
+        /* 背の低い画面では中身がはみ出しうるので、縦だけスクロールさせる */
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+      /*
+        画面の上は絵（カタマリと題字）、下に項目。絵のほうが残りの高さを取り、真ん中に寄る。
+        項目は小さめの札にして下へ寄せる（項目が画面の半分を占めると、設定画面に見える）
+      */
+      #menu .panel.top .hero {
+        flex: 1 0 auto;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding-bottom: clamp(12px, 3vh, 32px);
+      }
+      #menu .panel.top ul.menu li + li {
+        margin-top: clamp(7px, 1.2vh, 11px);
+      }
+      #menu .panel.top ul.menu button {
+        padding-top: clamp(12px, 1.9vh, 18px);
+        padding-bottom: clamp(12px, 1.9vh, 18px);
+        font-size: clamp(17px, 4.8vw, 21px);
+      }
+      #menu .panel.top .kicker {
+        margin: 0 0 4px;
+        font-size: clamp(11px, 3vw, 13px);
+        font-weight: 700;
+        letter-spacing: 0.3em;
+        /* 字間は最後の 1 文字の右にも入るので、そのぶん戻して中央に見せる */
+        margin-right: -0.3em;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      #menu .panel.top h1 {
+        position: relative;
+        margin-bottom: 0;
+        /* 7 文字が 1 行に収まる大きさ。折り返すと題字に見えなくなる */
+        white-space: nowrap;
+        font-size: clamp(34px, 12.4vw, 62px);
+        font-weight: 900;
+        font-style: italic;
+        letter-spacing: 0.12em;
+        margin-right: -0.12em;
+        line-height: 1.1;
+      }
+      /*
+        1 文字ずつ動かすために分けてある（h1 の文字列は NOVARIA のまま）。
+        色は h1 ではなく 1 文字ずつに塗る。親で background-clip: text をすると、
+        子の opacity が動いたときに切り抜きが外れて文字が消える
+      */
+      #menu .panel.top h1 i {
+        display: inline-block;
+        font-style: normal;
+        background: linear-gradient(180deg, #ffffff 0%, #ffffff 42%, #9fe6ff 58%, #e8fbff 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      /*
+        題字の厚み。同じ文字を 1 枚、少し下にずらして差し色の濃い青で敷く（押し出した金属の板に見せる）。
+        ぼかしは使わないので、題字が動いても塗り直しは起きない
+      */
+      #menu .panel.top .logo::before {
+        content: attr(data-text);
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0.08em;
+        z-index: 0;
+        white-space: nowrap;
+        font-size: clamp(34px, 12.4vw, 62px);
+        font-weight: 900;
+        font-style: italic;
+        letter-spacing: 0.12em;
+        margin-right: -0.12em;
+        line-height: 1.1;
+        color: #1b5f9e;
+        transform: translate(0.05em, 0.05em);
+      }
+      /*
+        題字の下の光。text-shadow は background-clip: text と両立しないうえ、
+        動く文字に付けると毎フレームぼかしを描き直すので、下に敷いた 1 枚で出す
+      */
+      /* 題字の上の札。左右に細い線を引いて、計器の見出しのように挟む */
+      #menu .panel.top .kicker::before,
+      #menu .panel.top .kicker::after {
+        content: '';
+        display: inline-block;
+        width: 22px;
+        height: 1px;
+        margin: 0 10px 4px;
+        vertical-align: middle;
+        background: linear-gradient(90deg, transparent, rgba(109, 227, 255, 0.7));
+      }
+      #menu .panel.top .kicker::after {
+        background: linear-gradient(90deg, rgba(109, 227, 255, 0.7), transparent);
+      }
+      #menu .panel.top .logo {
+        position: relative;
+      }
+      /* 題字が飛び込んだ瞬間に後ろで弾ける光と、画面を横切る光の線。演出のあいだだけ見える */
+      #menu .panel.top .burst {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 260px;
+        height: 260px;
+        margin: -130px 0 0 -130px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(255, 255, 255, 0.9), rgba(109, 227, 255, 0.45) 30%, transparent 68%);
+        opacity: 0;
+        pointer-events: none;
+      }
+      #menu .panel.top .flare {
+        position: absolute;
+        left: -40vw;
+        right: -40vw;
+        top: 50%;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, rgba(160, 235, 255, 0.9) 30%, #fff 50%, rgba(160, 235, 255, 0.9) 70%, transparent);
+        opacity: 0;
+        pointer-events: none;
+      }
+      #menu .panel.top h1 {
+        z-index: 1;
+      }
+      #menu .panel.top .glow {
+        width: 76%;
+        height: 22px;
+        margin: -4px auto clamp(12px, 2vh, 18px);
+        background: radial-gradient(ellipse at center, rgba(109, 227, 255, 0.55), transparent 70%);
+      }
+
+      /*
+        打ち上がった隕石のカタマリ。tile.ts が焼いている絵と同じ比率（角丸 10%、すき間 2%、上のつや）を
+        CSS で写す。ここは 3 個しかないので、焼いて貼る仕組みは要らない
+      */
+      #menu .launch {
+        --tile: clamp(30px, 9vw, 48px);
+        position: relative;
+        width: var(--tile);
+        /* 点線を外したので、題字との間はここで取る */
+        margin: 0 auto clamp(18px, 4vh, 36px);
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      #menu .tile {
+        position: relative;
+        /* 炎（.flame）の上端が潜るので、マスを手前に描く */
+        z-index: 1;
+        width: var(--tile);
+        height: var(--tile);
+        border-radius: 10%;
+        border: 2px solid var(--ink);
+        /* tile.ts と同じく、左上から当たる光と、上の縁の面取りを重ねる */
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.4) 0 7%, transparent 7%),
+          radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.26), transparent 55%),
+          radial-gradient(circle at 30% 24%, transparent 60%, rgba(0, 0, 0, 0.2) 100%),
+          linear-gradient(180deg, var(--light), var(--dark));
+      }
+      /*
+        上の面のつや。tile.ts と同じ位置と大きさだが、こちらは大きく出るので、
+        下へ向かって溶かす。塗りつぶした帯のままだと板に紙を貼ったように見える
+      */
+      #menu .tile::before {
+        content: '';
+        position: absolute;
+        left: 14%;
+        top: 10%;
+        width: 72%;
+        height: 20%;
+        border-radius: 12% / 44%;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.05));
+      }
+      /* 柄はつやの上に。tile.ts も柄を最後に描く */
+      #menu .tile::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: center / 58% no-repeat var(--glyph);
+      }
+      #menu .tile.h2o {
+        --light: var(--h2o-light);
+        --dark: var(--h2o-dark);
+        --ink: var(--h2o-ink);
+        --glyph: var(--glyph-h2o);
+      }
+      #menu .tile.fire {
+        --light: var(--fire-light);
+        --dark: var(--fire-dark);
+        --ink: var(--fire-ink);
+        --glyph: var(--glyph-fire);
+      }
+      #menu .tile.soil {
+        --light: var(--soil-light);
+        --dark: var(--soil-dark);
+        --ink: var(--soil-ink);
+        --glyph: var(--glyph-soil);
+      }
+      /*
+        噴射の炎。view.ts の drawFlame と同じで、太い舌の内側に細くて長い舌を重ねる。
+        1 枚だけだと下に向かって尖った棒に見える。揺らぎは 2 枚の周期をずらして出す
+      */
+      /*
+        炎はマスより少し広いので、margin: auto では真ん中に来ない（縦並びの flex では、
+        入れ物より広い子の auto の余白が 0 になり、左に寄って右へはみ出す）。
+        align-self: center ならはみ出しても真ん中に置ける。
+        上の端はマスの下に 3px 潜らせ、マスのほうを手前に描いて継ぎ目を隠す
+      */
+      #menu .flame {
+        position: relative;
+        align-self: center;
+        width: calc(var(--tile) * 1.15);
+        height: calc(var(--tile) * 1.45);
+        margin-top: -3px;
+      }
+      #menu .flame i {
+        position: absolute;
+        left: 50%;
+        top: 0;
+        transform-origin: 50% 0;
+      }
+      /* 外側の舌。噴き出し口から下へ広がりながら薄れる */
+      #menu .flame i:first-child {
+        width: 100%;
+        height: 100%;
+        margin-left: -50%;
+        background: radial-gradient(
+          ellipse 54% 92% at 50% 0%,
+          rgba(255, 246, 214, 0.92) 0%,
+          rgba(255, 214, 120, 0.85) 26%,
+          rgba(255, 150, 50, 0.6) 52%,
+          rgba(240, 80, 28, 0.28) 78%,
+          rgba(200, 40, 15, 0) 100%
+        );
+        animation: flicker 0.5s ease-in-out infinite alternate;
+      }
+      /* 内側の芯。細くて長く、外より速く揺れる */
+      #menu .flame i:last-child {
+        width: 40%;
+        height: 108%;
+        margin-left: -20%;
+        background: radial-gradient(
+          ellipse 50% 100% at 50% 0%,
+          rgba(255, 255, 248, 0.95) 0%,
+          rgba(255, 238, 180, 0.8) 26%,
+          rgba(255, 190, 90, 0.4) 58%,
+          rgba(255, 120, 40, 0) 100%
+        );
+        animation: flicker-inner 0.37s ease-in-out infinite alternate;
+      }
+      @keyframes flicker {
+        from {
+          transform: scale(0.92, 0.86);
+        }
+        to {
+          transform: scale(1.04, 1.12);
+        }
+      }
+      @keyframes flicker-inner {
+        from {
+          transform: scale(0.86, 0.94);
+        }
+        to {
+          transform: scale(1.06, 1.2);
+        }
+      }
+      /*
+        打ち上げの飛行機雲。炎の下から画面の下まで伸びる光の筋で、上がっているあいだだけ見える。
+        止まった状態（= 演出の終わり）では消えている
+      */
+      #menu .trail {
+        position: absolute;
+        left: 50%;
+        top: calc(100% - 8px);
+        width: 8px;
+        height: 70vh;
+        margin-left: -4px;
+        border-radius: 4px;
+        background: linear-gradient(180deg, rgba(255, 236, 190, 0.95), rgba(255, 160, 70, 0.55) 18%, rgba(120, 190, 255, 0.18) 55%, transparent);
+        transform-origin: 50% 0;
+        opacity: 0;
+        pointer-events: none;
+      }
+      /* 大気圏を抜けた瞬間の白い閃光。画面全体に 1 度だけ */
+      #menu .flash {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        background: radial-gradient(circle at 50% 22%, #fff, rgba(200, 240, 255, 0.7) 45%, rgba(109, 227, 255, 0.3));
+        opacity: 0;
+        pointer-events: none;
+      }
+      /*
+        地平線の夜明け。惑星の縁の上に差し色の光が横へ広がる。演出で左右へ開き、そのあとも薄く残る
+      */
+      #menu .dawn {
+        position: absolute;
+        left: -10vw;
+        right: -10vw;
+        bottom: calc(14vh - 12vh);
+        height: 24vh;
+        z-index: 0;
+        background: radial-gradient(50% 50% at 50% 50%, rgba(109, 227, 255, 0.3), rgba(90, 120, 255, 0.1) 45%, transparent 72%);
+        pointer-events: none;
+      }
+      /*
+        背景で打ち上がり続けるカタマリ。地平線から宇宙へ抜けて消え、数秒おいてまた上がる。
+        動かすのは transform と opacity だけ。動きを減らす設定では、終わりの状態（見えない）で止まる
+      */
+      #menu .volleys {
+        position: absolute;
+        inset: 0;
+        z-index: 0;
+        overflow: hidden;
+        pointer-events: none;
+      }
+      #menu .volley {
+        --m: calc(14px * var(--s));
+        position: absolute;
+        bottom: 14vh;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        opacity: 0;
+        animation: volley var(--t) cubic-bezier(0.3, 0, 0.8, 0.6) var(--d) infinite;
+      }
+      #menu .volley b {
+        width: var(--m);
+        height: var(--m);
+        border-radius: 10%;
+      }
+      #menu .volley b.h2o {
+        background: linear-gradient(180deg, var(--h2o-light), var(--h2o-dark));
+      }
+      #menu .volley b.fire {
+        background: linear-gradient(180deg, var(--fire-light), var(--fire-dark));
+      }
+      #menu .volley b.soil {
+        background: linear-gradient(180deg, var(--soil-light), var(--soil-dark));
+      }
+      /* 尾。カタマリの下に伸びる炎と光の筋 */
+      #menu .volley::after {
+        content: '';
+        align-self: center;
+        width: calc(var(--m) * 0.5);
+        height: calc(var(--m) * 9);
+        border-radius: 99px;
+        background: linear-gradient(180deg, rgba(255, 240, 200, 0.95), rgba(255, 150, 60, 0.6) 20%, rgba(120, 190, 255, 0.15) 60%, transparent);
+      }
+      @keyframes volley {
+        0% {
+          opacity: 0;
+          transform: translateY(0);
+        }
+        2% {
+          opacity: 1;
+        }
+        16% {
+          opacity: 0.9;
+        }
+        24% {
+          opacity: 0;
+          transform: translateY(-96vh);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-96vh);
+        }
+      }
+      /* 大気圏を抜けたときの輪。カタマリの下端（＝線を横切るところ）で 1 度だけ広がる */
+      #menu .ring {
+        position: absolute;
+        left: 50%;
+        top: 100%;
+        width: 96px;
+        height: 96px;
+        margin: -48px 0 0 -48px;
+        border: 2px solid #ffe9a8;
+        border-radius: 50%;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #menu ul.menu button {
+        transition:
+          color 0.15s ease,
+          border-color 0.15s ease,
+          transform 0.15s ease;
+      }
+      #menu ul.menu button.on {
+        transform: translateX(4px);
+      }
+      #menu ul.menu button:active {
+        transform: translateX(4px) scale(0.985);
+      }
+      /*
+        選んでいる項目では、番号の場所に三角の隕石を置く。項目をまたいで動く要素を持つと
+        位置の計算が要るので、ボタンの中の .mark を出し入れして飛び移らせる
+      */
+      #menu .panel.top ul.menu button.on::before {
+        opacity: 0;
+      }
+      #menu .panel.top ul.menu .mark {
+        position: absolute;
+        left: 18px;
+        top: 50%;
+        width: 18px;
+        height: 18px;
+        margin-top: -9px;
+        border-radius: 10%;
+        border: 2px solid var(--fire-ink);
+        background:
+          center / 58% no-repeat var(--glyph-fire),
+          linear-gradient(180deg, var(--fire-light), var(--fire-dark));
+        opacity: 0;
+        transform: translateX(-6px) scale(0.6);
+        transition:
+          opacity 0.15s ease,
+          transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      #menu .panel.top ul.menu button.on .mark {
+        opacity: 1;
+        transform: none;
+        /* 飛び移る動きが終わってから揺れ始める */
+        animation: marker-bob 1.2s ease-in-out 0.18s infinite alternate;
+      }
+      @keyframes marker-bob {
+        from {
+          transform: translateY(-1px);
+        }
+        to {
+          transform: translateY(1px);
+        }
+      }
+
+      /*
+        オープニング。#menu に intro が付いているあいだだけ animation が効く。
+        クラスを外すとどの要素も通常のスタイル（= 演出の終了状態）になるので、
+        途中でタップされてもそこで完成形に飛ぶ。
+
+        演出のあいだも .panel の page-in は止めない。ここで animation: none にすると、
+        クラスを外した瞬間に animation-name が変わって page-in が頭から走り、
+        画面全体が一度消えてから入り直す（＝終わりぎわのちらつき）。
+        page-in は開いた直後の 0.22 秒で終わっていて、そのころ中身はまだ
+        どれも見えていないので、鳴らしたままで困らない
+      */
+      /* 演出のあいだはカタマリが画面の下へはみ出すので、そのぶんスクロールできてしまわないようにする */
+      #menu.intro .panel.top {
+        overflow: hidden;
+      }
+      /*
+        星空は、明るくなりながら下へ流れる。カタマリを追うカメラが一緒に上がっている、
+        という見立て（カタマリは上がり、星は下がるので、飛んでいる速さが二重に出る）。
+        打ち上げと同じ 0.3 秒から始め、カタマリが止まったあとも流れ続けて、
+        演出の終わりでゆっくり止まる（止まるまで飛んでいるように見せる）
+      */
+      #menu.intro .sky {
+        animation:
+          fade-in 0.6s ease-out both,
+          sky-fall 2s cubic-bezier(0.22, 0.72, 0.3, 1) 0.3s both;
+      }
+      /*
+        明るい星だけは余計に流して、近くにあるように見せる。
+        動かす面が増えるので、包みと明るい星の 2 枚までにする（細かい星の層は
+        包みごと動くので、層 1 枚ずつに animation を付けない）
+      */
+      #menu.intro .bright {
+        animation: sky-fall-near 2s cubic-bezier(0.22, 0.72, 0.3, 1) 0.3s both;
+      }
+      #menu.intro .planet {
+        animation: horizon-in 0.7s ease-out both;
+      }
+      /* 地平線の下から出発して、大気圏を抜けたところで止まる */
+      #menu.intro .launch {
+        animation: lift 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) 0.3s both;
+      }
+      #menu.intro .ring {
+        /* 大気圏を抜けるのは打ち上げ始めて 0.3 秒ほど。初速が速いので、輪もそこに合わせる。
+           forwards にして、始まる前に小さい輪が見えたままにならないようにする */
+        animation: shock 0.45s ease-out 0.6s forwards;
+      }
+      /*
+        背の低い画面（iPhone SE など）では、絵を詰めて 5 つの項目がスクロールなしで収まるようにする
+      */
+      @media (max-height: 720px) {
+        #menu .launch {
+          --tile: clamp(22px, 6.4vw, 30px);
+          margin-bottom: 8px;
+        }
+        #menu .panel.top {
+          padding-top: 6px;
+          padding-bottom: 12px;
+        }
+        #menu .panel.top .hero {
+          padding-bottom: 6px;
+        }
+        #menu .panel.top .glow {
+          margin-bottom: 6px;
+        }
+        #menu .panel.top ul.menu button {
+          padding-top: 10px;
+          padding-bottom: 10px;
+        }
+      }
+      /* 打ち上げのあいだ炎を長く太くし、飛行機雲を引く */
+      #menu.intro .flame {
+        transform-origin: 50% 0;
+        animation: boost 1.2s cubic-bezier(0.2, 0.8, 0.2, 1) 0.3s both;
+      }
+      #menu.intro .trail {
+        animation: trail 1.3s ease-out 0.3s both;
+      }
+      /* 大気圏を抜けた瞬間（0.6 秒）に、画面が白く光って揺れる */
+      #menu.intro .flash {
+        animation: flash 0.45s ease-out 0.58s both;
+      }
+      #menu.intro .hero {
+        animation: jolt 0.36s linear 0.6s both;
+      }
+      #menu.intro .dawn {
+        animation: dawn 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+      }
+      /* 題字は大きいところから叩きつけるように飛び込み、後ろで光が弾ける */
+      #menu.intro .logo {
+        animation: slam 0.46s cubic-bezier(0.2, 1.25, 0.35, 1) 1s both;
+      }
+      #menu.intro .burst {
+        animation: burst 0.7s ease-out 1.08s both;
+      }
+      #menu.intro .flare {
+        animation: flare 0.8s ease-out 1.08s both;
+      }
+      @keyframes boost {
+        from {
+          transform: scale(1.3, 2.4);
+        }
+        to {
+          transform: none;
+        }
+      }
+      @keyframes trail {
+        0% {
+          opacity: 0;
+          transform: scaleY(0.3);
+        }
+        12% {
+          opacity: 1;
+          transform: scaleY(1);
+        }
+        60% {
+          opacity: 0.85;
+          transform: scaleY(0.7);
+        }
+        100% {
+          opacity: 0;
+          transform: scaleY(0);
+        }
+      }
+      @keyframes flash {
+        0% {
+          opacity: 0;
+        }
+        18% {
+          opacity: 0.55;
+        }
+        100% {
+          opacity: 0;
+        }
+      }
+      @keyframes jolt {
+        0%,
+        100% {
+          transform: none;
+        }
+        15% {
+          transform: translate(-5px, 4px);
+        }
+        35% {
+          transform: translate(4px, -3px);
+        }
+        55% {
+          transform: translate(-3px, 2px);
+        }
+        75% {
+          transform: translate(2px, -1px);
+        }
+      }
+      @keyframes dawn {
+        from {
+          opacity: 0;
+          transform: scaleX(0.1);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes slam {
+        from {
+          opacity: 0;
+          transform: scale(2.3);
+        }
+        40% {
+          opacity: 1;
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes burst {
+        from {
+          opacity: 0.95;
+          transform: scale(0.2);
+        }
+        to {
+          opacity: 0;
+          transform: scale(1.8);
+        }
+      }
+      @keyframes flare {
+        from {
+          opacity: 1;
+          transform: scaleX(0.05);
+        }
+        35% {
+          opacity: 1;
+          transform: none;
+        }
+        to {
+          opacity: 0;
+          transform: none;
+        }
+      }
+      #menu.intro .kicker {
+        animation: fade-in 0.5s ease-out 1.35s both;
+      }
+      /* 題字の下の光は、真ん中から左右へ伸びる */
+      #menu.intro .glow {
+        animation: glow-in 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) 1.3s both;
+      }
+      @keyframes glow-in {
+        from {
+          opacity: 0;
+          transform: scaleX(0);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      /* 遅れは項目の番号（--i）から計算する。並びが増えても最後まで順に出る */
+      #menu.intro ul.menu li {
+        animation: slide-in 0.34s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+        animation-delay: calc(1.6s + var(--i, 0) * 0.07s);
+      }
+      #menu.intro ~ #build {
+        animation: fade-in 0.3s ease-out 2.1s both;
+      }
+      @keyframes fade-in {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+      /* 項目は左から順に差し込まれる */
+      @keyframes slide-in {
+        from {
+          opacity: 0;
+          transform: translateX(-28px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(14px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      @keyframes horizon-in {
+        from {
+          opacity: 0;
+          transform: translateX(-50%) translateY(12vh);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(-50%);
+        }
+      }
+      /*
+        星空が下へ流れる量。上から差し込んで元の位置に戻るので、終わりは通常の見た目になる。
+        下に空く帯は地平線（画面の下 14vh）に隠れる範囲に収める
+      */
+      @keyframes sky-fall {
+        from {
+          transform: translateY(-14vh);
+        }
+        to {
+          transform: none;
+        }
+      }
+      @keyframes sky-fall-near {
+        from {
+          transform: translateY(-5vh);
+        }
+        to {
+          transform: none;
+        }
+      }
+      @keyframes lift {
+        from {
+          /* 惑星の地平線より下。そこから噴射で上がってくる */
+          transform: translateY(82vh);
+        }
+        to {
+          transform: translateY(0);
+        }
+      }
+      @keyframes shock {
+        from {
+          opacity: 0.9;
+          transform: scale(0.2);
+        }
+        to {
+          opacity: 0;
+          transform: scale(1.6);
+        }
+      }
+
+      /* 動きを減らす設定の人には、動きを出さずに終了状態だけを見せる */
+      @media (prefers-reduced-motion: reduce) {
+        #menu *,
+        #menu *::before,
+        #menu *::after,
+        #overlay *,
+        #build {
+          animation-duration: 0.001s !important;
+          animation-delay: 0s !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.001s !important;
+        }
+      }
+      ul.how {
+        margin: 0 0 22px;
+        padding: 0;
+        list-style: none;
+        text-align: left;
+        font-size: 13.5px;
+        line-height: 1.6;
+        color: rgba(255, 255, 255, 0.8);
+      }
+      /* 説明の並び。左に差し色の細い棒を立てた札にする */
+      ul.how li {
+        padding: 8px 12px;
+        margin-bottom: 6px;
+        background:
+          linear-gradient(rgba(109, 227, 255, 0.5), rgba(109, 227, 255, 0.5)) left / 2px 100% no-repeat,
+          linear-gradient(90deg, rgba(109, 227, 255, 0.07), rgba(255, 255, 255, 0.02));
+        border-radius: 3px;
+      }
+      ul.how b {
+        color: #6de3ff;
+      }
+      /* 惑星めぐりの道のり。抜けたことのある惑星には印を付ける */
+      ul.stops .note {
+        display: block;
+        margin-top: 2px;
+        font-size: 12.5px;
+        opacity: 0.7;
+      }
+      ul.stops .goal {
+        float: right;
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      ul.stops li.reached b::after {
+        content: 'CLEAR';
+        margin-left: 8px;
+        padding: 1px 5px;
+        font-size: 9px;
+        letter-spacing: 0.14em;
+        color: #04202f;
+        background: #ffe873;
+        border-radius: 2px;
+        vertical-align: 2px;
+      }
+      ul.stops li.reached {
+        background:
+          linear-gradient(#ffe873, #ffe873) left / 2px 100% no-repeat,
+          linear-gradient(90deg, rgba(255, 232, 115, 0.08), rgba(255, 255, 255, 0.02));
+      }
+      table.result {
+        width: 100%;
+        margin: 0 0 22px;
+        border-collapse: collapse;
+        font-size: 15px;
+      }
+      /* 数字の並び。見出しは小さく沈め、数字は等幅で明るく。行の区切りは点線 */
+      table.result th {
+        text-align: left;
+        padding: 9px 4px;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        color: rgba(255, 255, 255, 0.55);
+        border-bottom: 1px dashed rgba(109, 227, 255, 0.16);
+      }
+      table.result td {
+        text-align: right;
+        padding: 9px 4px;
+        font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+        font-weight: 800;
+        font-size: 18px;
+        border-bottom: 1px dashed rgba(109, 227, 255, 0.16);
+      }
+      /* 結果の画面の 1 行目（得点・到達）は大きく出す */
+      #overlay table.result tr:first-child td {
+        font-size: 30px;
+        color: #fff;
+      }
+      /*
+        主の操作。差し色の塗りに、上の縁の光と右の山形（›）を添える。
+        角は小さく切り立たせて、ゲーム画面の計器と揃える
+      */
+      button {
+        position: relative;
+        width: 100%;
+        padding: 15px;
+        font-size: 17px;
+        font-weight: 800;
+        font-family: inherit;
+        letter-spacing: 0.06em;
+        color: #04202f;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.45), transparent 2px),
+          linear-gradient(180deg, #7fe8ff, #1b8fd0);
+        border: 0;
+        border-radius: 4px;
+        cursor: pointer;
+        box-shadow: 0 6px 22px rgba(40, 170, 240, 0.28);
+      }
+      button:not(ul.menu button):not(.sub-button):not(#mute):not(.tab):not(.who-bar)::after {
+        content: '›';
+        position: absolute;
+        right: 16px;
+        top: 50%;
+        transform: translateY(-54%);
+        font-size: 1.3em;
+        font-weight: 900;
+        opacity: 0.6;
+      }
+      button:active {
+        transform: translateY(1px);
+      }
+      /* 従の操作。暗いガラスに細い縁 */
+      button.sub-button {
+        margin-top: 10px;
+        color: rgba(255, 255, 255, 0.82);
+        background: rgba(10, 12, 34, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow: none;
+      }
+      button.sub-button:hover {
+        border-color: rgba(109, 227, 255, 0.5);
+      }
+      /* 入り切りの札（音）。右に ON / OFF の小さな窓を出す */
+      button.toggle {
+        text-align: left;
+        padding-left: 20px;
+      }
+      button.toggle::after {
+        content: 'OFF';
+        position: absolute;
+        right: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        padding: 3px 8px;
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        color: rgba(255, 255, 255, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 2px;
+      }
+      button.toggle[aria-pressed='true']::after {
+        content: 'ON';
+        color: #04202f;
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      .best {
+        margin: 0 0 16px;
+        font-size: 12.5px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      /* 区切りの見出し。差し色の四角と、右へ伸びる細い線 */
+      h2.section {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 22px 0 10px;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        color: rgba(255, 255, 255, 0.62);
+        text-align: left;
+      }
+      h2.section::before {
+        content: '';
+        flex: none;
+        width: 6px;
+        height: 6px;
+        background: var(--accent);
+      }
+      h2.section::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: linear-gradient(90deg, rgba(109, 227, 255, 0.35), transparent);
+      }
+      h2.section:first-child {
+        margin-top: 0;
+      }
+      /*
+        「記録」の見出しの下の名前の札。触ると「名前と公開」へ。
+        ボタンだが主の操作ではないので、塗らずに細い縁の札にする
+      */
+      button.who-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 0 0 12px;
+        padding: 10px 14px;
+        font-size: 14px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: rgba(255, 255, 255, 0.86);
+        background: rgba(10, 12, 34, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow: none;
+        text-align: left;
+      }
+      .who-name {
+        min-width: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .who-go {
+        flex: none;
+        font-size: 12px;
+        color: var(--accent);
+      }
+      .who-go::after {
+        content: ' ›';
+      }
+      /*
+        「記録」のタブ。3 つを横に並べた切り替えで、選んでいるものに差し色の下線を引く。
+        タブと「戻る」は動かさず、下の中身（.panel-body）だけがスクロールする
+      */
+      .tabs {
+        display: flex;
+        flex: none;
+        margin-bottom: 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+      }
+      button.tab {
+        flex: 1;
+        width: auto;
+        padding: 10px 4px 11px;
+        font-size: 14px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        white-space: nowrap;
+        color: rgba(255, 255, 255, 0.55);
+        background: none;
+        border-radius: 0;
+        box-shadow: none;
+      }
+      button.tab::after {
+        content: '';
+        position: absolute;
+        left: 12%;
+        right: 12%;
+        bottom: -1px;
+        height: 2px;
+        background: var(--accent);
+        opacity: 0;
+      }
+      button.tab[aria-selected='true'] {
+        color: #ffffff;
+      }
+      button.tab[aria-selected='true']::after {
+        opacity: 1;
+      }
+      .pane[hidden] {
+        display: none;
+      }
+      /* ランキングの自分の順位。表の上に出して、開いてすぐ分かるようにする */
+      .ranking-sum {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        margin: 0;
+        padding: 0 0 10px;
+        background: #0f0c2a;
+        font-size: 14px;
+        font-weight: 800;
+        color: #6de3ff;
+      }
+      /* 「名前と公開」で、いまどうなっているかの一行 */
+      #menu .setting-now {
+        margin-bottom: 4px;
+        color: #ffffff;
+        font-weight: 700;
+      }
+      /* 取り消せない操作。赤い縁にして、ほかのボタンと見分ける */
+      h2.section.danger::before {
+        background: #ff5b78;
+      }
+      h2.section.danger::after {
+        background: linear-gradient(90deg, rgba(255, 91, 120, 0.4), transparent);
+      }
+      button.danger-button {
+        color: #ff8aa0;
+        border-color: rgba(255, 91, 120, 0.55);
+      }
+      button.danger-button:hover {
+        border-color: #ff5b78;
+      }
+      /* 名前を決める画面。指で押せる大きさにして、決定ボタンと並べる */
+      .name-input {
+        width: 100%;
+        box-sizing: border-box;
+        margin-bottom: 12px;
+        padding: 14px;
+        font-family: inherit;
+        font-size: 19px;
+        font-weight: 700;
+        text-align: center;
+        color: #ffffff;
+        background: rgba(4, 6, 20, 0.7);
+        border: 1px solid rgba(109, 227, 255, 0.28);
+        border-bottom: 2px solid var(--accent);
+        border-radius: 4px;
+      }
+      .name-input:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(109, 227, 255, 0.18);
+      }
+      .name-error {
+        margin: 0 0 12px;
+        font-size: 13px;
+        color: #ff5b78;
+      }
+      /* ランキングの表。順位・名前・得点の 3 列で、名前が長いときは省略する */
+      table.ranking {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 15px;
+        table-layout: fixed;
+      }
+      table.ranking td {
+        padding: 7px 4px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      }
+      table.ranking td.rank {
+        width: 2.6em;
+        text-align: right;
+        font-family: ui-monospace, monospace;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      table.ranking td.who {
+        padding-left: 10px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      table.ranking td.score {
+        width: 6.5em;
+        text-align: right;
+        font-family: ui-monospace, monospace;
+        font-weight: 800;
+      }
+      table.ranking tr.me td {
+        color: #6de3ff;
+      }
+      /* 上位に入っていない自分の行。上の並びと続きでないことを線で示す */
+      table.ranking tr.gap td {
+        border-top: 2px dashed rgba(255, 255, 255, 0.18);
+      }
+      .new {
+        margin-left: 6px;
+        padding: 2px 6px;
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        color: #04202f;
+        background: #ffe873;
+        border-radius: 2px;
+        vertical-align: middle;
+      }
+      /* いま動いている版。スマホでプレビューを開いたとき、どの commit の版かをここで確かめる */
+      #build {
+        position: fixed;
+        left: max(10px, env(safe-area-inset-left));
+        bottom: max(8px, env(safe-area-inset-bottom));
+        z-index: 11;
+        display: flex;
+        gap: 12px;
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+      }
+      #build[hidden] {
+        display: none;
+      }
+      #build a {
+        color: rgba(255, 255, 255, 0.45);
+        text-decoration: none;
+      }
+      #build a:hover,
+      #build a:active {
+        color: rgba(255, 255, 255, 0.85);
+      }
+      /* 音の入り切り。隅の文字と同じ見た目にして、遊びの邪魔をしない */
+      #mute {
+        width: auto;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: rgba(255, 255, 255, 0.45);
+        font-family: inherit;
+        font-size: inherit;
+      }
+      #mute:hover,
+      #mute:active {
+        color: rgba(255, 255, 255, 0.85);
+      }
+      #build #repo-link {
+        color: rgba(255, 255, 255, 0.62);
+      }
+      /* お知らせを開く。音の入り切りと同じ隅の文字にして、未読があるあいだだけ点を灯す */
+      #news-open {
+        position: relative;
+        width: auto;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: rgba(255, 255, 255, 0.45);
+        font-family: inherit;
+        font-size: inherit;
+      }
+      #news-open:hover,
+      #news-open:active {
+        color: rgba(255, 255, 255, 0.85);
+      }
+      #news-open.unread {
+        color: var(--accent);
+      }
+      #news-open.unread::before {
+        content: '';
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin: 0 5px 1px 0;
+        border-radius: 50%;
+        background: #ffe873;
+        vertical-align: middle;
+      }
+      /*
+        新しい版になったことを知らせる帯。トップメニューの上の空いた空に出て、触るとお知らせを開く。
+        下に出すと、背の低い画面で項目に重なる。
+        画面を塞がないよう小さく、放っておけば消える（main.ts の showNewsToast）。
+        盤面の箱と同じ暗いガラスに差し色の細い縁
+      */
+      #news-toast {
+        position: fixed;
+        left: 50%;
+        top: max(14px, calc(env(safe-area-inset-top) + 8px));
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: max-content;
+        max-width: calc(100vw - 32px);
+        margin: 0;
+        padding: 9px 14px 9px 12px;
+        font-family: inherit;
+        font-size: 13px;
+        color: #fff;
+        white-space: nowrap;
+        background: linear-gradient(180deg, rgba(16, 14, 44, 0.94), rgba(7, 6, 22, 0.94));
+        border: 1px solid rgba(109, 227, 255, 0.45);
+        border-radius: 4px;
+        transform: translateX(-50%);
+        animation: news-toast 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+      }
+      #news-toast[hidden] {
+        display: none;
+      }
+      #news-toast .tag {
+        padding: 2px 6px;
+        font-size: 10px;
+        font-weight: 900;
+        letter-spacing: 0.14em;
+        color: #04202f;
+        background: var(--accent);
+        border-radius: 2px;
+      }
+      #news-toast .what {
+        font-weight: 800;
+        letter-spacing: 0.04em;
+      }
+      #news-toast .go {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      #news-toast .go::after {
+        content: ' ›';
+      }
+      @keyframes news-toast {
+        from {
+          opacity: 0;
+          transform: translateX(-50%) translateY(-10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(-50%);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #news-toast {
+          animation: none;
+        }
+      }
+      /* お知らせの 1 件。見出しの札に日付、その下に題と中身 */
+      .news-item + .news-item {
+        margin-top: 22px;
+      }
+      .news-item h2.section time {
+        font-family: ui-monospace, monospace;
+        letter-spacing: 0.08em;
+      }
+      .news-item h2.section .new {
+        margin-left: 0;
+      }
+      /* お知らせの中身。遊び方の札ほど重くせず、差し色の点を打った短い行を並べる */
+      ul.news-lines {
+        margin: 0 0 6px;
+        padding: 0;
+        list-style: none;
+        text-align: left;
+        font-size: clamp(14px, 3.8vw, 16px);
+        line-height: 1.6;
+        color: rgba(255, 255, 255, 0.78);
+      }
+      ul.news-lines li {
+        position: relative;
+        padding-left: 16px;
+        margin-bottom: 4px;
+      }
+      ul.news-lines li::before {
+        content: '';
+        position: absolute;
+        left: 2px;
+        top: 0.68em;
+        width: 5px;
+        height: 5px;
+        background: var(--accent);
+        opacity: 0.7;
+      }
+      .news-title {
+        margin: 0 0 8px;
+        font-size: clamp(16px, 4.4vw, 19px);
+        font-weight: 800;
+        text-align: left;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="backdrop" aria-hidden="true"></div>
+    <div id="alarm" aria-hidden="true"></div>
+    <div id="menu"></div>
+    <div id="overlay"></div>
+    <div id="updating" hidden>
+      <div class="radar"><i></i><b></b></div>
+      <p>新しい版を読み込んでいる…</p>
+    </div>
+    <div id="notice" hidden></div>
+    <button id="news-toast" type="button" hidden>
+      <span class="tag">UPDATE</span><span class="what">新しくなりました</span><span class="go">何が変わった？</span>
+    </button>
+    <footer id="build" hidden>
+      <button id="mute" type="button"></button>
+      <button id="news-open" type="button">お知らせ</button>
+      <span id="build-id"></span>
+      <a id="repo-link" href="https://github.com/uphy/novaria" target="_blank" rel="noopener">GitHub</a>
+    </footer>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

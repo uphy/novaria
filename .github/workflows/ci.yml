@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# 既定では読むだけにする。書き込みが要るジョブだけ、ジョブの permissions で足す
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ブランチ保護の必須 check は、分割した検証がすべて成功した場合だけ成功する。
+  check:
+    if: always()
+    needs: [unit, e2e, e2e-api]
+    runs-on: ubuntu-latest
+    steps:
+      - name: すべての検証結果を確認
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")'
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm check:names
+      - run: pnpm test
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      # ロックした @playwright/test のバージョンと一緒に上げる。
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
+      options: --init --ipc=host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/playwright
+        timeout-minutes: 2
+      - run: pnpm e2e
+        env:
+          CI: "1"
+          # コンテナの中では git の所有者チェックに引っかかって rev-parse が使えないので、
+          # ビルド識別子に出す commit は head の SHA を渡す（e2e/menu.spec.ts が形を見ている）
+          BUILD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: 失敗したテストのスクリーンショットと trace を残す
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: test-results/
+          retention-days: 7
+
+  # ランキングは Worker と D1 が要るので、preview では回せない。
+  # こちらは wrangler dev をローカルで立てて、API と画面をつないで確かめる
+  e2e-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble
+      options: --init --ipc=host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/playwright
+        timeout-minutes: 2
+      - run: pnpm e2e:api
+        env:
+          CI: "1"
+          WRANGLER_LOG_PATH: ./test-server-logs
+      - name: 失敗したテストのスクリーンショットと trace を残す
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-api-results
+          path: |
+            test-results-api/
+            test-server-logs/
+          retention-days: 7
+
+  # PR 専用の Worker に公開する。本番のカスタムドメインには載らない。
+  # スマホで実機確認してから merge するために使う。URL は新しい版が配信されてから PR のコメントに書き、
+  # push のたびに前のコメントを消して最新の commit の下に書き直す。
+  # fork からの PR には secrets が渡らず Cloudflare に上げられないので、このリポジトリのブランチの PR だけで走らせる
+  preview:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+        env:
+          # checkout は PR のマージコミットなので、メニューに出す commit は head のものを渡す
+          BUILD_COMMIT: ${{ github.event.pull_request.head.sha }}
+      - name: プレビュー版をアップロード
+        id: upload
+        run: |
+          node tools/prepare-preview.mjs
+          node tools/prepare-score-database.mjs .wrangler-preview.json .wrangler-preview.json
+          pnpm exec wrangler deploy -c .wrangler-preview.json | tee upload.log
+          url=$(grep -o 'https://[a-z0-9.-]*workers\.dev' upload.log | head -1)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: 新しい版が配信されるまで待つ
+        env:
+          URL: ${{ steps.upload.outputs.url }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # アップロードが済んでも、しばらくは前の版が返ることがある。
+          # 配信されている index.html と sw.js が、いまビルドしたものと同じになってから URL を知らせる
+          for i in $(seq 1 60); do
+            if curl -fsS "$URL/?v=$SHA" | cmp -s - dist/index.html &&
+              curl -fsS "$URL/sw.js?v=$SHA" | cmp -s - dist/sw.js; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::5 分待っても新しい版が配信されない"
+          exit 1
+      - name: PR にプレビュー URL をコメント
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ steps.upload.outputs.url }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # 前のコメントを消して新しく書く。更新するだけだと最初の push の位置に残り、
+          # タイムラインのどの commit の版なのかが分からない。書き直すと最新の commit の下に並ぶ
+          repo="${{ github.repository }}"
+          pr="${{ github.event.pull_request.number }}"
+          for id in $(gh api --paginate "repos/$repo/issues/$pr/comments" --jq '.[] | select(.body | startswith("<!-- preview-url -->")) | .id'); do
+            gh api -X DELETE "repos/$repo/issues/comments/$id" > /dev/null
+          done
+          # 目印の HTML コメントは1行で独立させ、空行で区切る。同じ行に続けて書くと、行全体が HTML ブロック扱いになって
+          # URL がリンクにならない（プレーンテキストのまま）。commit の短縮ハッシュは GitHub がその commit へのリンクにする
+          body="<!-- preview-url -->
+
+          ${URL} ${SHA:0:7}"
+          gh pr comment "$pr" --body "$body"

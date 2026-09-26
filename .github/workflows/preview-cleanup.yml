@@ -1,0 +1,41 @@
+name: preview-cleanup
+
+# PR を閉じたら（merge を含む）、その PR 専用のプレビューを片付ける。
+# ci.yml の preview ジョブが PR ごとに Worker `novaria-pr-<番号>` と
+# ランキングの置き場 `novaria-pr-<番号>-scores`（D1）を作るので、
+# 放っておくとアカウントに溜まり続ける。D1 はアカウントの個数上限があり、
+# 埋まると新しい PR のプレビューが立たなくなる。
+on:
+  pull_request:
+    types: [closed]
+
+# 既定では読むだけにする。書き込みが要るジョブだけ、ジョブの permissions で足す
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    # プレビューを立てるのはこのリポジトリのブランチの PR だけ（ci.yml の preview と同じ条件）
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: プレビューの Worker とランキングの置き場を消す
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # preview ジョブと同じ名前の設定を作って、その Worker を消す。
+          # preview が走らなかった PR では Worker が無いので、失敗にしない
+          node tools/prepare-preview.mjs
+          pnpm exec wrangler delete -c .wrangler-preview.json --force || echo "Worker novaria-pr-${PR_NUMBER} は無いか、消せなかった"
+          pnpm exec wrangler d1 delete "novaria-pr-${PR_NUMBER}-scores" -y || echo "D1 novaria-pr-${PR_NUMBER}-scores は無いか、消せなかった"

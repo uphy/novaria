@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "novaria",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "main": "worker/index.ts",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "routes": [
+    {
+      "pattern": "novaria.uphy.dev",
+      "custom_domain": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "ARENA", "class_name": "Arena" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Arena"] }],
+  "d1_databases": [
+    {
+      "binding": "SCORES_DB",
+      "database_name": "novaria-scores",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

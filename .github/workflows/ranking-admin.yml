@@ -1,0 +1,51 @@
+name: Ranking admin
+
+# ランキングの見回り（tools/ranking-admin.ts）。ほかの人が不快に思う名前を差し替えたり、行を消したりする。
+# スマホの GitHub アプリからも Actions → Ranking admin → Run workflow で押せる。
+# まず list で順位と名前を見て、hide か delete にその順位と名前を入れる
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'list（上位 50 人を見る）/ hide（名前を「名無し」に差し替える）/ delete（行を消す）'
+        type: choice
+        options: [list, hide, delete]
+        default: list
+      rank:
+        description: '順位（hide と delete のとき）'
+        required: false
+      name:
+        description: 'その順位の名前（取り違え防止。一致しないと何もしない）'
+        required: false
+
+# 既定では読むだけにする。書き込みが要るジョブだけ、ジョブの permissions で足す
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  admin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # 名前は利用者が入れた文字列なので、シェルに直に埋め込まず環境変数で渡す
+      - run: |
+          node tools/prepare-score-database.mjs wrangler.jsonc .wrangler-deploy.json
+          pnpm ranking "$ACTION" "$RANK" "$NAME" --remote --config .wrangler-deploy.json
+        env:
+          ACTION: ${{ inputs.action }}
+          RANK: ${{ inputs.rank }}
+          NAME: ${{ inputs.name }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

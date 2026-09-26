@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.DS_Store
+*.local
+
+# Playwright の出力（失敗したときのスクリーンショットと trace）
+test-results/
+test-results-api/
+test-server-logs/
+playwright-report/
+
+# CI が作る wrangler の設定（tools/prepare-preview.mjs と prepare-score-database.mjs）
+.wrangler-preview.json
+.wrangler-deploy.json
+.wrangler/
+
+# 原作の仕様書と調査記録。手元にだけ置く（公開リポジトリに原作の名称を出さないため）
+.local/
+
+# wrangler dev のローカルの秘密（手元にだけ置く）
+.dev.vars
+.env
+.env.*

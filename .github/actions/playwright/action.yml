@@ -1,0 +1,25 @@
+name: Playwright コンテナの確認
+description: インストール済みブラウザのバージョン一致と起動を確認する（ダウンロードなし）
+runs:
+  using: composite
+  steps:
+    - name: イメージのバージョンと Chromium の起動を確認
+      shell: bash
+      run: |
+        node --input-type=module <<'NODE'
+        import assert from 'node:assert/strict';
+        import { readFileSync } from 'node:fs';
+        import { createRequire } from 'node:module';
+        import { chromium } from '@playwright/test';
+        const require = createRequire(import.meta.url);
+        const version = require('@playwright/test/package.json').version;
+        const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+        const images = [...workflow.matchAll(/image:\s*mcr\.microsoft\.com\/playwright:v([^\s]+)-noble/g)];
+        assert.ok(images.length >= 1, 'Playwright を回すジョブはバージョンを固定したイメージを使う');
+        for (const [, imageVersion] of images) {
+          assert.equal(imageVersion, version, 'CI のイメージのタグは @playwright/test と一緒に上げる');
+        }
+        const browser = await chromium.launch();
+        console.log(`Playwright ${version}: bundled Chromium ${browser.version()} ready`);
+        await browser.close();
+        NODE

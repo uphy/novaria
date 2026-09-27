@@ -194,6 +194,8 @@ export class Game {
   /** 全消しの得点を、空になっているあいだ何度も入れないための印 */
   private screenCleared = false;
   private events: Events = emptyEvents();
+  /** 先読みの写しか。写しでは新しく降らせない（`fork`） */
+  private forked = false;
 
   constructor(opts: GameOptions = {}) {
     this.planet = opts.planet ?? NOVARIA;
@@ -355,6 +357,31 @@ export class Game {
     const rates = this.planet.rates;
     const idx = this.rng.weighted(rates.map((r) => r[1]));
     return rates[idx][0];
+  }
+
+  /**
+   * 先読みのための写し。ヒントが「この手を打ったら何フレーム後にどうなるか」を試すのに使う。
+   * 人に見えないものは使わないので、写しではまだ降っていない隕石を降らせない。
+   * 燃えカスが何に戻るかも乱数で決まるので、乱数は本物と別の列にする（本物の先を覗かない）
+   */
+  fork(): Game {
+    const g = Object.create(Game.prototype) as Game;
+    Object.assign(g, this);
+    // 隕石はどれも 1 か所にしかいないので、まとめて写せば掴んでいる隕石とカタマリの隕石も食い違わない
+    const data = structuredClone({
+      ground: this.ground,
+      fallings: this.fallings,
+      lumps: this.lumps,
+      drag: this.drag,
+      breakTimers: this.breakTimers,
+      warnings: this.warnings,
+      launched: this.launched,
+    });
+    Object.assign(g, data);
+    g.rng = new Rng(0x5eed ^ this.frame);
+    g.events = emptyEvents();
+    g.forked = true;
+    return g;
   }
 
   // ---------------------------------------------------------------- 入力
@@ -557,6 +584,7 @@ export class Game {
   // ---------------------------------------------------------------- 落下
 
   private spawn(): void {
+    if (this.forked) return;
     this.spawnTimer -= 1;
     if (this.spawnTimer > 0) return;
     this.spawnTimer = this.spawnInterval;

@@ -64,6 +64,35 @@ test('ヒントは次のゲームに持ち越さない。つけ直さなけれ�
   expect(await page.evaluate(() => localStorage.getItem('novaria.records.v1'))).not.toBeNull();
 });
 
+test('ヒントをつけると速さのスライダーが出て、左へ寄せるとゲームがゆっくり進む', async ({ page }) => {
+  await startGame(page);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#hint-speed-box')).toBeHidden();
+  await page.getByRole('button', { name: 'ヒント なし' }).click();
+  await expect(page.locator('#hint-speed-box')).toBeVisible();
+  await page.locator('#hint-speed').fill('0');
+  await expect(page.locator('#hint-speed-value')).toHaveText('×0.25');
+  await page.getByRole('button', { name: '続ける' }).click();
+  await page.waitForFunction(() => window.__novaria.running);
+  expect(await page.evaluate(() => window.__novaria.speed)).toBe(0.25);
+
+  // ヒントを消すと通常の速さに戻る
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'ヒント あり' }).click();
+  await expect(page.locator('#hint-speed-box')).toBeHidden();
+  await page.getByRole('button', { name: '続ける' }).click();
+  await page.waitForFunction(() => window.__novaria.running);
+  expect(await page.evaluate(() => window.__novaria.speed)).toBe(1);
+
+  // 次のゲームでヒントをつけ直すと、前に選んだ速さで始まる
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '最初から' }).click();
+  await page.waitForFunction(() => window.__novaria.running);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'ヒント なし' }).click();
+  await expect(page.locator('#hint-speed-value')).toHaveText('×0.25');
+});
+
 test('CPU 戦の一時停止にはヒントの切り替えが無い', async ({ page }) => {
   await openTitle(page);
   await page.evaluate(() => window.__novaria.startVersus('easy'));

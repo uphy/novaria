@@ -42,6 +42,8 @@ export interface NovariaHandle {
   startOnline(code?: string | null): void;
   /** 練習のヒントの矢印（col 列の row from から row to へ）。出していなければ null */
   readonly hint: HintArrow | null;
+  /** いまのゲームの速さ（1 が通常）。ヒントを使うときだけ遅くできる */
+  readonly speed: number;
   view: View;
   fx: Effects;
   /** 鳴らした音の並びと、いま鳴っている音源の数 */

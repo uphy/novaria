@@ -320,7 +320,7 @@ export class View {
     rival?: RivalView | null,
     rivalName = '相手',
     escape: Escape | null = null,
-    hint: { arrow: HintArrow | null } | null = null,
+    hint: { arrow: HintArrow | null; speed: number } | null = null,
   ): void {
     const ctx = this.ctx;
     const L = this.layout;
@@ -357,7 +357,7 @@ export class View {
     ctx.restore();
 
     this.drawHud(ctx, game, fx, rival ?? null, rivalName, escape);
-    if (hint) this.drawHintTag(ctx);
+    if (hint) this.drawHintTag(ctx, hint.speed);
     if (hint?.arrow) this.drawHintPolicy(ctx, hint.arrow, game.frame);
     this.drawBoost(ctx, boostHeld, game.frame);
     // 帯の見出しは盤面の真ん中より少し上に、揺れの外で出す
@@ -929,7 +929,7 @@ export class View {
   }
 
   /** ヒントをつけている印。一時停止ボタンの下に出す（このゲームは記録に残らない） */
-  private drawHintTag(ctx: CanvasRenderingContext2D): void {
+  private drawHintTag(ctx: CanvasRenderingContext2D, speed: number): void {
     const L = this.layout;
     const size = Math.max(9, Math.round(L.cell * 0.22));
     ctx.save();
@@ -937,7 +937,10 @@ export class View {
     ctx.textAlign = 'left';
     ctx.fillStyle = HINT_COLOR;
     spacing(ctx, Math.max(1.5, L.cell * 0.05));
-    ctx.fillText('HINT', L.pause.x, L.pause.y + L.pause.size + size + 4);
+    const y = L.pause.y + L.pause.size + size + 4;
+    ctx.fillText('HINT', L.pause.x, y);
+    // ゆっくりにしているときは、その下の行に速さを出す。横に並べると連鎖の数字に重なる
+    if (speed < 1) ctx.fillText(`×${speed}`, L.pause.x, y + size + 3);
     spacing(ctx, 0);
     ctx.restore();
   }

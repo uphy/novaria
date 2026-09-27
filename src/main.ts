@@ -116,6 +116,24 @@ function hinting(): boolean {
   return hintOn && versus === null && online === null;
 }
 
+/** ヒントを使うときに選べるゲームの速さ。右（最後）が通常。25 % より遅いと落ちる様子がほぼ止まって見える */
+const HINT_SPEEDS = [0.25, 0.4, 0.6, 0.8, 1] as const;
+/**
+ * ヒントを使うときのゲームの速さ（`HINT_SPEEDS` の添字）。ゆっくり考えながら練習するため。
+ * 端末には残さないが、開いているあいだは覚えておき、次にヒントをつけたときもこの速さで始める。
+ * ヒントを消しているあいだは通常の速さで動く（記録に残るゲームを遅くしない）
+ */
+let hintSpeedIndex = HINT_SPEEDS.length - 1;
+
+/** いまのゲームの速さ。1 が通常 */
+function timeScale(): number {
+  return hinting() ? HINT_SPEEDS[hintSpeedIndex] : 1;
+}
+
+function speedLabel(): string {
+  return `×${HINT_SPEEDS[hintSpeedIndex]}`;
+}
+
 /** 最後に帯で知らせたレベルの節目（20 ごと）。盤面が替わると 0 に戻す */
 let levelMark = 0;
 /** レベルの節目。ここを越えたら帯の見出しを出す */
@@ -136,7 +154,7 @@ function drawFrame(): void {
     versus?.rival ?? online?.rival,
     online?.rivalName,
     tour ? { label: tour.stage.planet.label, launched: tour.launched, goal: tour.stage.goal } : null,
-    hinting() ? { arrow: hinter.arrow(game) } : null,
+    hinting() ? { arrow: hinter.arrow(game), speed: timeScale() } : null,
   );
 }
 
@@ -586,7 +604,7 @@ function howHtml(): string {
         <li><b>下の帯を押す</b> … 時間が速く進む。降りが速くなる</li>
         <li><b>橙に光った列</b> … あと 1 段で大気圏。崩すか、一番上を上へ払って逃がす</li>
         <li><b>赤く光った列</b> … 大気圏まで積もった。線の上の帯が尽きると滅亡</li>
-        <li><b>ヒント</b> … 一時停止でつけると、次に動かすとよい隕石と運び先を矢印で出す。緑は攻め、橙と赤は危ない列を守る手。ゲームごとにつけ直す。つけたゲームは記録に残らない</li>
+        <li><b>ヒント</b> … 一時停止でつけると、次に動かすとよい隕石と運び先を矢印で出す。緑は攻め、橙と赤は危ない列を守る手。一時停止の「速さ」でゆっくりにできる。ゲームごとにつけ直す。つけたゲームは記録に残らない</li>
       </ul>
       </div>
       <button id="menu-back">戻る</button>
@@ -1413,6 +1431,11 @@ function showPause(): void {
         versus
           ? ''
           : `<button id="pause-hint" class="sub-button toggle" aria-pressed="${hintOn}">${hintLabel()}</button>
+      <div id="hint-speed-box" class="speed"${hintOn ? '' : ' hidden'}>
+        <div class="speed-head"><span>速さ</span><b id="hint-speed-value">${speedLabel()}</b></div>
+        <input id="hint-speed" type="range" min="0" max="${HINT_SPEEDS.length - 1}" step="1" value="${hintSpeedIndex}" aria-label="ヒントを使うときの速さ">
+        <div class="speed-ends"><span>ゆっくり</span><span>ふつう</span></div>
+      </div>
       <p id="hint-note" class="best"${hintUsed ? '' : ' hidden'}>${HINT_NOTE}</p>`
       }
       <button id="restart" class="sub-button">最初から</button>
@@ -1439,7 +1462,14 @@ function showPause(): void {
     hint.textContent = hintLabel();
     hint.setAttribute('aria-pressed', String(hintOn));
     document.getElementById('hint-note')!.hidden = !hintUsed;
+    // 速さはヒントをつけているときだけ効くので、消しているあいだは隠す
+    document.getElementById('hint-speed-box')!.hidden = !hintOn;
     audio.ui('confirm');
+  });
+  const speed = document.getElementById('hint-speed') as HTMLInputElement | null;
+  speed?.addEventListener('input', () => {
+    hintSpeedIndex = Number(speed.value);
+    document.getElementById('hint-speed-value')!.textContent = speedLabel();
   });
   document.getElementById('restart')!.addEventListener('click', () =>
     tour ? startTour() : startGame(lastLevel),
@@ -1772,7 +1802,8 @@ function frame(now: number): void {
     return;
   }
 
-  acc += Math.min(200, now - last);
+  // ヒントでゆっくりにしているときは、進める時間を縮める。盤面の進み方そのものは変えない
+  acc += Math.min(200, now - last) * timeScale();
   last = now;
 
   while (acc >= STEP && running) {
@@ -1808,7 +1839,7 @@ function step(): void {
   } else {
     ev = game.tick();
   }
-  if (hinting()) hinter.update(game);
+  if (hinting()) hinter.update(game, timeScale());
   const dueling = versus !== null || online !== null;
   const L = view.layout;
 
@@ -2300,6 +2331,10 @@ let debugUpdatesApplied = 0;
     startOnline(code);
   },
   /** 練習のヒントの矢印。出していなければ null */
+  /** いまのゲームの速さ（1 が通常）。ヒントを使うときだけ遅くできる */
+  get speed() {
+    return timeScale();
+  },
   get hint() {
     return hinting() ? hinter.arrow(game) : null;
   },

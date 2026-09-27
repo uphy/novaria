@@ -132,9 +132,21 @@ export function columnLeft(game: Game, c: number): number {
   return rows * game.columnFillFrames * HINT_TUNING.fillCaution + game.breakFrames;
 }
 
-/** 手を打ち切るまでに人がかかる時間（フレーム） */
+/**
+ * ゲームの速さ（1 が通常）。ヒントを使うときだけ遅くできる。
+ * 人の手の速さ（`HINT_TUNING` の気づくまで・1 手・余裕）は実時間なので、ゲームのフレーム数に直すときにこれを掛ける。
+ * 半分の速さなら、人が 1 秒かかるあいだにゲームは 30 フレームしか進まない
+ */
+let pace = 1;
+
+/** 実時間のフレーム数を、いまの速さのゲームのフレーム数に直す */
+function human(frames: number): number {
+  return frames * pace;
+}
+
+/** 手を打ち切るまでに人がかかる時間（ゲームのフレーム） */
 function handFrames(moves: number): number {
-  return HINT_TUNING.reactFrames + moves * HINT_TUNING.moveFrames;
+  return human(HINT_TUNING.reactFrames + moves * HINT_TUNING.moveFrames);
 }
 
 /**
@@ -154,9 +166,9 @@ function assess(game: Game, plans: Plan[]): Pressure[] {
     const left = columnLeft(game, c);
     const need = handFrames(fastest.get(c) ?? HINT_TUNING.unknownMoves);
     const tier: HintTier =
-      game.breakTimers[c] !== null || left < need + HINT_TUNING.urgentSpare
+      game.breakTimers[c] !== null || left < need + human(HINT_TUNING.urgentSpare)
         ? 'urgent'
-        : left < need + HINT_TUNING.guardSpare
+        : left < need + human(HINT_TUNING.guardSpare)
           ? 'guard'
           : 'attack';
     result.push({ col: c, tier, left, need });
@@ -180,9 +192,16 @@ export class Hinter {
   private game: Game | null = null;
   /** 最後に考えたときの列ごとの危なさ。矢印の色を毎フレーム決めるのに使う */
   private pressures: Pressure[] = [];
+  /** 最後に渡されたゲームの速さ。矢印に出す秒数を実時間に直すのに使う */
+  private speed = 1;
 
-  /** 1 tick ごとに呼ぶ。指で動かしているあいだは手本を替えない */
-  update(game: Game): void {
+  /**
+   * 1 tick ごとに呼ぶ。指で動かしているあいだは手本を替えない。
+   * speed はゲームの速さ（1 が通常）。遅くしているほど、人は同じ実時間でゲームの先まで手を打てる
+   */
+  update(game: Game, speed = 1): void {
+    pace = speed;
+    this.speed = speed;
     if (game !== this.game) {
       // 惑星めぐりで盤面が替わった。隕石の id は盤面ごとに振り直すので、前の手本は使えない
       this.game = game;
@@ -238,15 +257,17 @@ export class Hinter {
       aim: h.aim,
       policy: h.policy,
       combo: game.combo,
-      comboLeft: comboLeft === null ? null : comboLeft / 60,
+      // 札に出す秒数は実時間。遅くしているぶん長くなる
+      comboLeft: comboLeft === null ? null : comboLeft / 60 / this.speed,
     };
     if (guard === null) return { ...base, tier: 'attack', seconds: null };
     const left = columnLeft(game, guard);
     const need = this.pressures[guard]?.need ?? handFrames(1);
     return {
       ...base,
-      tier: game.breakTimers[guard] !== null || left < need + HINT_TUNING.urgentSpare ? 'urgent' : 'guard',
-      seconds: Math.max(1, Math.ceil(left / 60)),
+      tier:
+        game.breakTimers[guard] !== null || left < need + HINT_TUNING.urgentSpare * this.speed ? 'urgent' : 'guard',
+      seconds: Math.max(1, Math.ceil(left / 60 / this.speed)),
     };
   }
 }
@@ -266,8 +287,8 @@ function chainBudget(game: Game): number {
  */
 function docks(game: Game, plan: Plan, moves: number): boolean {
   const delay = handFrames(moves);
-  const early = Math.max(0, delay - HINT_TUNING.moveFrames);
-  return [early, delay, delay + HINT_TUNING.dockSlack].every((d) => forecastDock(game, plan, d) !== null);
+  const early = Math.max(0, delay - human(HINT_TUNING.moveFrames));
+  return [early, delay, delay + human(HINT_TUNING.dockSlack)].every((d) => forecastDock(game, plan, d) !== null);
 }
 
 /**

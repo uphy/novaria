@@ -153,6 +153,28 @@ describe('ヒント', () => {
     expect(hinter.arrow(g)).toMatchObject({ col: 6, tier: 'guard' });
   });
 
+  it('ゲームを遅くしていると、人が考えるあいだにゲームが進まないぶん、守りに替えるのが遅くなる', () => {
+    const tall = [
+      Kind.Circle, Kind.Drop, Kind.Square, Kind.Hexagon, Kind.Circle,
+      Kind.Drop, Kind.Triangle, Kind.Square, Kind.Triangle, Kind.Triangle,
+    ];
+    const make = () => {
+      const g = board([[], [], [], [], tall]);
+      g.frame = 60 * 60 * 30;
+      return g;
+    };
+    const normal = make();
+    const fast = new Hinter();
+    for (let i = 0; i < 12; i++) fast.update(normal);
+    const slow = new Hinter();
+    const slowGame = make();
+    for (let i = 0; i < 12; i++) slow.update(slowGame, 0.25);
+    const a = fast.arrow(normal)!;
+    expect(a.tier).toBe('guard');
+    // 4 分の 1 の速さなら、人が考えるあいだにゲームはほとんど進まないので、まだ守らなくていい
+    expect(slow.arrow(slowGame)?.tier ?? 'attack').toBe('attack');
+  });
+
   it('滅亡まで数えている列を崩す手が無ければ、一番上を上へ払う手を出す', () => {
     // 12 段で、どの柄も 2 つまで。揃える手が無い
     const kinds = [Kind.Circle, Kind.Drop, Kind.Square, Kind.Hexagon, Kind.Pentagon, Kind.Triangle];

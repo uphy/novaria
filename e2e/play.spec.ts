@@ -112,3 +112,40 @@ test('加速の帯を押すと落下が速くなる', async ({ page }) => {
   await advance(page, 10);
   expect(await page.evaluate(() => window.__novaria.game.boost)).toBe(false);
 });
+
+test.describe('両手で運ぶ', () => {
+  test.use({ hasTouch: true });
+
+  test('2 本の指で別々の列をなぞると、両方の列が入れ替わる', async ({ page }) => {
+    await startGame(page);
+    await page.evaluate((q) => window.__novaria.setColumns(q), QUIET);
+
+    const a0 = await cellCenter(page, 0, 0);
+    const a1 = await cellCenter(page, 0, 1);
+    const b0 = await cellCenter(page, 3, 0);
+    const b1 = await cellCenter(page, 3, 1);
+    // 本物の指 2 本ぶんのタッチを送る。合成した PointerEvent では setPointerCapture が通らない
+    const cdp = await page.context().newCDPSession(page);
+    const touch = (type: 'touchStart' | 'touchMove' | 'touchEnd', points: { x: number; y: number }[]) =>
+      cdp.send('Input.dispatchTouchEvent', {
+        type,
+        touchPoints: points.map((p, id) => ({ x: p.x, y: p.y, id })),
+      });
+    await touch('touchStart', [a0, b0]);
+    for (let i = 1; i <= 8; i++) {
+      const t = i / 8;
+      await touch('touchMove', [
+        { x: a0.x, y: a0.y + (a1.y - a0.y) * t },
+        { x: b0.x, y: b0.y + (b1.y - b0.y) * t },
+      ]);
+    }
+    await touch('touchEnd', []);
+
+    const cols = await columnKinds(page);
+    expect(cols[0]).toEqual([Kind.Triangle, Kind.Circle]);
+    expect(cols[3]).toEqual([Kind.Drop, Kind.Square]);
+    // 触っていない列は動かない
+    expect(cols[1]).toEqual([Kind.Drop, Kind.Square]);
+    expect(await page.evaluate(() => window.__novaria.game.drags.size)).toBe(0);
+  });
+});

@@ -168,7 +168,7 @@ window.addEventListener('orientationchange', () => setTimeout(onResize, 200));
 // ------------------------------------------------------------------ 入力
 
 /**
- * 指 1 本で隕石を掴み、列の中で上下に運ぶ。
+ * 指で隕石を掴み、列の中で上下に運ぶ。指ごとに別の列を掴めるので、両手で 2 列を同時に運べる。
  * 原作はタッチペンで同じ列の中だけを動かす操作なので、左右の移動は無視する。
  */
 interface Touch {
@@ -208,7 +208,7 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   const { col, row } = view.toBoard(x, y);
-  if (game.grab(col, row) && game.drag) audio.grab(game.drag.kind);
+  if (game.grab(col, row, e.pointerId)) audio.grab(game.drags.get(e.pointerId)!.kind);
   touches.set(e.pointerId, { id: e.pointerId, lastY: y, boost: false, moved: false });
 });
 
@@ -219,7 +219,7 @@ canvas.addEventListener('pointermove', (e) => {
   const { y } = pointerPos(e);
   const dy = t.lastY - y; // 画面の上へ動かすと row が増える
   t.lastY = y;
-  game.dragBy(dy / view.layout.cell);
+  game.dragBy(dy / view.layout.cell, e.pointerId);
 });
 
 function endTouch(e: PointerEvent): void {
@@ -229,8 +229,9 @@ function endTouch(e: PointerEvent): void {
   if (t.boost) {
     boostHeld = [...touches.values()].some((o) => o.boost);
   } else {
-    if (game.drag) audio.release(game.drag.kind, t.moved);
-    game.release();
+    const drag = game.drags.get(t.id);
+    if (drag) audio.release(drag.kind, t.moved);
+    game.release(t.id);
   }
 }
 canvas.addEventListener('pointerup', endTouch);
@@ -1956,7 +1957,8 @@ function step(): void {
   // 指で動かした音。同じフレームに何マスも動いていたら最後の 1 マスだけ鳴らす
   for (const m of ev.moves) {
     audio.step(m.kind, m.row, m.up);
-    for (const t of touches.values()) if (!t.boost) t.moved = true;
+    const t = touches.get(m.finger);
+    if (t) t.moved = true;
   }
   if (ev.locked) audio.lock();
   if (ev.screenClear) {

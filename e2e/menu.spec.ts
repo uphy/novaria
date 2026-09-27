@@ -40,7 +40,7 @@ test('「遊び方」を開いて「戻る」でトップへ帰る', async ({ pa
   await openTitle(page);
   await page.getByRole('button', { name: '遊び方' }).click();
   await expect(page.locator('#menu h1')).toHaveText('遊び方');
-  await expect(page.locator('#menu ul.how li')).toHaveCount(8);
+  await expect(page.locator('#menu ul.how li')).toHaveCount(9);
 
   await page.getByRole('button', { name: '戻る' }).click();
   await expect(page.locator('#menu h1')).toHaveText('NOVARIA');

@@ -25,6 +25,7 @@ worktree を並べるときは `DEV_PORT` / `PREVIEW_PORT` でポートを変え
 - 惑星めぐりは `src/core/planets.ts`（渡っていく 6 惑星と、脱出に要る打ち上げ数）と `src/core/tour.ts`（惑星の乗り継ぎと合計の集計）。惑星ごとの色は `src/render/theme.ts` の `PLANET_LOOKS`（空の 3 色は CSS 変数として body に渡す）。惑星の値を変えたら `pnpm sim tour` で脱出できるかを測り直す。決め方の理由は docs/decisions.md の「惑星めぐり」にある
 - CPU との対戦は `src/core/versus.ts`（2 つの `Game` を同じ tick で進め、打ち上げたぶんを互いに降らせる）。CPU の思考は `src/core/cpu.ts` にあり、`pnpm sim` もこれを使う
 - オンライン対戦は `src/online/`（端末側）と `worker/arena.ts`（Durable Object の待ち合わせと中継）。相手の盤面はこちらでは動かさず、攻撃の数と盤面の絵だけを送り合う。やり取りの形は `src/online/protocol.ts` に置いて両方から使う。決め方の理由は docs/decisions.md の「オンライン対戦」にある
+- 練習のヒントは `src/core/hint.ts`（`cpu.ts` の `suggest` が返す最初の 1 手を、隕石の id で覚えて据え置く）と `View.drawHint`。切り替えは一時停止の画面で、端末に `novaria.hint.v1` で持ち越す（`src/render/practice.ts`）。1 度でもつけたゲームは `main.ts` の `hintUsed` が立ち、記録にもランキングにも残さない。対戦では出さない。決め方の理由は docs/decisions.md の「練習のヒント」
 - `src/render/` が Canvas の描画・タッチ・効果音。見た目の決まりは `src/render/theme.ts`
 - ゲーム画面の背景（星空・星雲・惑星の地平線）は canvas の後ろの `#backdrop`（`sky.ts` の `backdropHtml`）で、何も動かさない。地平線の頂は `View.resize` が渡す `--ground-y`（盤面の下辺）に合わせ、色は `View.setPlanet` が `--ground` / `--ground-edge` で渡す。滅亡が迫っているときの赤い縁は canvas の上の `#alarm`（`View.applySky` が `on` を付け外しし、明るさは CSS が揺らす）
 - 光って見えるもの（閃き・光の柱・攻撃の弾・装填の弾・発射台の灯）は `src/render/glow.ts` の焼いた光の玉と柱を `lighter` で貼る

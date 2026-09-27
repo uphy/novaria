@@ -273,11 +273,20 @@ function planGuarded(game: Game): Move[] | null {
   return chosen?.moves ?? null;
 }
 
+/** 空中のカタマリの 1 列の中で、from 番と to 番（下から数えた添字）の隕石を入れ替える手 */
+interface LumpSwap {
+  lumpId: number;
+  col: number;
+  from: number;
+  to: number;
+}
+
 /**
  * 空中のカタマリの中でそろえ直す手を探す（第二次点火）。
  * 原作ではここが一番の稼ぎどころで、点火を重ねるほど高く飛ぶ。
+ * 返すのは列ごとの入れ替え。列はどれも別なので、どの順に入れ替えても同じになる
  */
-function planLump(game: Game): (() => void) | null {
+function planLump(game: Game): LumpSwap[] | null {
   for (const lump of game.lumps) {
     const byCol = new Map<number, number[]>();
     for (const cell of lump.cells) {
@@ -294,32 +303,65 @@ function planLump(game: Game): (() => void) | null {
         const kinds = new Set<Kind>();
         for (const list of lists) for (const cell of list) if (cell.meteor.kind !== Kind.Dust) kinds.add(cell.meteor.kind);
         for (const kind of kinds) {
-          const ops: (() => void)[] = [];
+          const swaps: LumpSwap[] = [];
           let ok = true;
           for (const list of lists) {
-            const target = list.find((c) => c.rel === rel);
-            if (!target) {
+            const to = list.findIndex((c) => c.rel === rel);
+            if (to < 0) {
               ok = false;
               break;
             }
-            if (target.meteor.kind === kind) continue;
-            const src = list.find((c) => c.meteor.kind === kind && c.rel !== rel);
-            if (!src) {
+            if (list[to].meteor.kind === kind) continue;
+            const from = list.findIndex((c) => c.meteor.kind === kind && c.rel !== rel);
+            if (from < 0) {
               ok = false;
               break;
             }
-            ops.push(() => {
-              const tmp = target.meteor;
-              target.meteor = src.meteor;
-              src.meteor = tmp;
-            });
+            swaps.push({ lumpId: lump.id, col: list[0].col, from, to });
           }
-          if (ok && ops.length > 0) return () => ops.forEach((f) => f());
+          if (ok && swaps.length > 0) return swaps;
         }
       }
     }
   }
   return null;
+}
+
+/** 空中のカタマリの中の入れ替えを、そのまま盤面に当てる */
+function applySwap(game: Game, swap: LumpSwap): void {
+  const lump = game.lumps.find((l) => l.id === swap.lumpId);
+  if (!lump) return;
+  const list = lump.cells.filter((c) => c.col === swap.col).sort((a, b) => a.rel - b.rel);
+  const a = list[swap.from];
+  const b = list[swap.to];
+  if (!a || !b) return;
+  const tmp = a.meteor;
+  a.meteor = b.meteor;
+  b.meteor = tmp;
+}
+
+/**
+ * ヒントに出す 1 手。地面なら `ground[col]` の、空中ならカタマリ `lumpId` の col 列の、
+ * from 番の隕石を to 番まで指で運ぶ（添字は下から数える）
+ */
+export interface Suggestion {
+  kind: 'ground' | 'lump';
+  lumpId: number;
+  col: number;
+  from: number;
+  to: number;
+}
+
+/**
+ * いまの盤面で「強い」の CPU が打つ最初の 1 手。練習のヒントに出す。
+ * 見るのは地面と空中のカタマリだけで、これから降ってくる隕石は見ない（人に見えないものを使わない）
+ */
+export function suggest(game: Game): Suggestion | null {
+  if (game.over) return null;
+  const swap = planLump(game)?.[0];
+  if (swap) return { kind: 'lump', ...swap };
+  const move = planGuarded(game)?.[0];
+  return move ? { kind: 'ground', lumpId: 0, ...move } : null;
 }
 
 /**
@@ -359,9 +401,9 @@ export class Cpu {
     this.cooldown = this.style.moveFrames;
 
     // 空中に塊があれば、まずその中でそろえ直す（第二次点火のほうが強い）
-    const chain = this.style.chains ? planLump(this.game) : null;
-    if (chain) {
-      chain();
+    const swaps = this.style.chains ? planLump(this.game) : null;
+    if (swaps) {
+      for (const swap of swaps) applySwap(this.game, swap);
       return;
     }
     if (this.style.guard) {

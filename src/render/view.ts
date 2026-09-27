@@ -1,5 +1,6 @@
 import { ATMOSPHERE_ROWS, SCORE, SCREEN_OUT_ROW, VISIBLE_ROWS } from '../core/constants';
 import { Game, burnHeat } from '../core/game';
+import type { HintArrow } from '../core/hint';
 import { Kind, isRareMetal, type Meteor, type RivalView } from '../core/types';
 import { Effects } from './effects';
 import { glowSprite, rgba } from './glow';
@@ -8,6 +9,8 @@ import { TILE_RADIUS, bakedFlame, drawTile, makeBakeCanvas, roundRect, setTileSc
 
 /** 得点の並びの左右の余白 */
 const HUD_PAD = 14;
+/** 練習のヒントの色。盤面の差し色（水色）とも連鎖の黄色とも混ざらない緑にする */
+const HINT_COLOR = '#8dffb4';
 /**
  * 盤面が下から組み上がる演出の長さ（フレーム）。ゲームを始めた直後と、惑星を渡った直後に流れる。
  * 描き方を変えるだけで、ゲームはその間も進んでいる（降ってくる隕石が大気圏に届くより短い）
@@ -266,6 +269,7 @@ export class View {
     rival?: RivalView | null,
     rivalName = '相手',
     escape: Escape | null = null,
+    hint: { arrow: HintArrow | null } | null = null,
   ): void {
     const ctx = this.ctx;
     const L = this.layout;
@@ -290,6 +294,7 @@ export class View {
     }
     this.drawField(ctx, game, danger);
     this.drawBlocks(ctx, game, fx);
+    if (hint?.arrow) this.drawHint(ctx, hint.arrow, game.frame);
     // 負けの暗い幕。隕石の上に敷き、粒と花火はその上に出す
     fx.drawDim(ctx, L.fieldX, this.rowTop(SCREEN_OUT_ROW - 1), L.fieldW, L.fieldBottomY);
     if (reveal < 1) {
@@ -301,6 +306,7 @@ export class View {
     ctx.restore();
 
     this.drawHud(ctx, game, fx, rival ?? null, rivalName, escape);
+    if (hint) this.drawHintTag(ctx);
     this.drawBoost(ctx, boostHeld, game.frame);
     // 帯の見出しは盤面の真ん中より少し上に、揺れの外で出す
     fx.drawBanner(ctx, L.fieldX, L.fieldW, this.rowTop(7) + L.cell / 2, L.cell);
@@ -718,6 +724,78 @@ export class View {
       ctx.stroke();
       ctx.restore();
     }
+    ctx.restore();
+  }
+
+  /**
+   * 練習のヒント。運ぶ隕石を縁取り、運び先を点線の枠で囲んで、そのあいだを矢印でつなぐ。
+   * 光りは shadowBlur を使わず、太い薄線の上に細い濃線を重ねて出す
+   */
+  private drawHint(ctx: CanvasRenderingContext2D, arrow: HintArrow, frame: number): void {
+    const L = this.layout;
+    const x = this.colLeft(arrow.col);
+    const fromY = this.rowTop(arrow.from);
+    const toY = this.rowTop(arrow.to);
+    const cx = x + L.cell / 2;
+    // 運ぶ向き。rowTop は row が増えると上へ行くので、画面の y では符号が逆になる
+    const dir = toY > fromY ? 1 : -1;
+    const pulse = 0.65 + 0.35 * Math.sin(frame * 0.15);
+    const thick = Math.max(5, L.cell * 0.2);
+    const thin = Math.max(2, L.cell * 0.07);
+    const pass = (path: () => void, dash: number[] = []): void => {
+      ctx.setLineDash(dash);
+      path();
+      ctx.strokeStyle = rgba('#0a2a18', 0.55 * pulse);
+      ctx.lineWidth = thick;
+      ctx.stroke();
+      ctx.strokeStyle = rgba(HINT_COLOR, pulse);
+      ctx.lineWidth = thin;
+      ctx.stroke();
+    };
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    pass(() => {
+      ctx.beginPath();
+      roundRect(ctx, x + 2, fromY + 2, L.cell - 4, L.cell - 4, L.cell * TILE_RADIUS);
+    });
+    pass(
+      () => {
+        ctx.beginPath();
+        roundRect(ctx, x + 3, toY + 3, L.cell - 6, L.cell - 6, L.cell * TILE_RADIUS);
+      },
+      [L.cell * 0.14, L.cell * 0.1],
+    );
+    // 矢印は運ぶ隕石の真ん中から、運び先の真ん中まで。隣へ 1 マス運ぶだけの手でも見えるよう、隕石の上に重ねる
+    const y0 = fromY + L.cell / 2;
+    const y1 = toY + L.cell / 2;
+    const head = L.cell * 0.24;
+    ctx.fillStyle = rgba(HINT_COLOR, 0.9 * pulse);
+    ctx.beginPath();
+    ctx.arc(cx, y0, L.cell * 0.1, 0, Math.PI * 2);
+    ctx.fill();
+    pass(() => {
+      ctx.beginPath();
+      ctx.moveTo(cx, y0);
+      ctx.lineTo(cx, y1);
+      ctx.moveTo(cx - head, y1 - dir * head);
+      ctx.lineTo(cx, y1);
+      ctx.lineTo(cx + head, y1 - dir * head);
+    });
+    ctx.restore();
+  }
+
+  /** ヒントをつけている印。一時停止ボタンの下に出す（このゲームは記録に残らない） */
+  private drawHintTag(ctx: CanvasRenderingContext2D): void {
+    const L = this.layout;
+    const size = Math.max(9, Math.round(L.cell * 0.22));
+    ctx.save();
+    ctx.font = `800 ${size}px ${SANS}`;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = HINT_COLOR;
+    spacing(ctx, Math.max(1.5, L.cell * 0.05));
+    ctx.fillText('HINT', L.pause.x, L.pause.y + L.pause.size + size + 4);
+    spacing(ctx, 0);
     ctx.restore();
   }
 

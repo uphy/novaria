@@ -1,6 +1,7 @@
 import { Game, type Events } from './core/game';
 import { NOVARIA, SCORE, SCREEN_OUT_ROW, VISIBLE_ROWS } from './core/constants';
 import { CpuLevel } from './core/cpu';
+import { Hinter } from './core/hint';
 import { TOUR } from './core/planets';
 import { Tour } from './core/tour';
 import { Versus } from './core/versus';
@@ -100,6 +101,39 @@ let margin: { mine: number; mineDanger: boolean; rival: number; rivalDanger: boo
 /** 前のフレームに危ない列があったか。警告が出た瞬間だけ揺らすのに使う */
 let wasDanger = false;
 let boostHeld = false;
+/**
+ * 練習のヒントを出すか。一時停止の画面で切り替える。
+ * 次のゲームには持ち越さず、始めるたびに消す（つけたまま忘れて、記録に残らないゲームを続けないように）。
+ * 惑星めぐりは惑星を渡っても同じゲームなので、渡るときには消さない
+ */
+let hintOn = false;
+/** いまのゲームで 1 度でもヒントをつけたか。つけたゲームは途中で消しても記録にもランキングにも残さない */
+let hintUsed = false;
+const hinter = new Hinter();
+
+/** いまヒントを出すか。対戦（CPU 戦もオンラインも）では出さない */
+function hinting(): boolean {
+  return hintOn && versus === null && online === null;
+}
+
+/** ヒントを使うときに選べるゲームの速さ。右（最後）が通常。25 % より遅いと落ちる様子がほぼ止まって見える */
+const HINT_SPEEDS = [0.25, 0.4, 0.6, 0.8, 1] as const;
+/**
+ * ヒントを使うときのゲームの速さ（`HINT_SPEEDS` の添字）。ゆっくり考えながら練習するため。
+ * 端末には残さないが、開いているあいだは覚えておき、次にヒントをつけたときもこの速さで始める。
+ * ヒントを消しているあいだは通常の速さで動く（記録に残るゲームを遅くしない）
+ */
+let hintSpeedIndex = HINT_SPEEDS.length - 1;
+
+/** いまのゲームの速さ。1 が通常 */
+function timeScale(): number {
+  return hinting() ? HINT_SPEEDS[hintSpeedIndex] : 1;
+}
+
+function speedLabel(): string {
+  return `×${HINT_SPEEDS[hintSpeedIndex]}`;
+}
+
 /** 最後に帯で知らせたレベルの節目（20 ごと）。盤面が替わると 0 に戻す */
 let levelMark = 0;
 /** レベルの節目。ここを越えたら帯の見出しを出す */
@@ -120,6 +154,7 @@ function drawFrame(): void {
     versus?.rival ?? online?.rival,
     online?.rivalName,
     tour ? { label: tour.stage.planet.label, launched: tour.launched, goal: tour.stage.goal } : null,
+    hinting() ? { arrow: hinter.arrow(game), speed: timeScale() } : null,
   );
 }
 
@@ -569,6 +604,7 @@ function howHtml(): string {
         <li><b>下の帯を押す</b> … 時間が速く進む。降りが速くなる</li>
         <li><b>橙に光った列</b> … あと 1 段で大気圏。崩すか、一番上を上へ払って逃がす</li>
         <li><b>赤く光った列</b> … 大気圏まで積もった。線の上の帯が尽きると滅亡</li>
+        <li><b>ヒント</b> … 一時停止でつけると、次に動かすとよい隕石と運び先を矢印で出す。緑は攻め、橙と赤は危ない列を守る手。一時停止の「速さ」でゆっくりにできる。ゲームごとにつけ直す。つけたゲームは記録に残らない</li>
       </ul>
       </div>
       <button id="menu-back">戻る</button>
@@ -804,7 +840,7 @@ function privacyHtml(): string {
       <h1>扱う情報</h1>
       <div class="panel-body">
         <h2 class="section">この端末にだけ残すもの</h2>
-        <p class="sub">遊び手の id（初めて開いたときに作る無作為の番号）、名前、自己ベスト、惑星めぐりの到達、対戦の戦績（相手の名前ごとの勝ち負け）、お知らせをどこまで読んだかの印。ブラウザのサイトデータを消すと消える。</p>
+        <p class="sub">遊び手の id（初めて開いたときに作る無作為の番号）、名前、自己ベスト、惑星めぐりの到達、対戦の戦績（相手の名前ごとの勝ち負け）、お知らせをどこまで読んだかの印、音の切り替え。ブラウザのサイトデータを消すと消える。</p>
         <h2 class="section">ランキングに送るもの</h2>
         <p class="sub">名前を決めた人の 1 人用の結果だけ。id・名前・スコア・打ち上げ数・最大連続点火・時間・送った時刻を残す。表に出るのは上位 50 人の名前とスコアで、id は誰にも見せない。</p>
         <p class="sub">送りすぎを止めるため、接続元の IP アドレスを日付と混ぜて元に戻せない形（ハッシュ）にしたものも残す。IP アドレスそのものは残さない。</p>
@@ -1280,6 +1316,8 @@ function startGame(level: CpuLevel | null): void {
   lastOnlineCode = undefined;
   tour = null;
   versus = level ? new Versus({ seed: nextSeed(), level }) : null;
+  hintOn = false;
+  hintUsed = false;
   beginPlay(versus ? versus.player : new Game({ seed: nextSeed() }));
 }
 
@@ -1290,6 +1328,8 @@ function startTour(): void {
   lastOnlineCode = undefined;
   versus = null;
   tour = new Tour({ seed: nextSeed() });
+  hintOn = false;
+  hintUsed = false;
   beginPlay(tour.game);
 }
 
@@ -1387,6 +1427,17 @@ function showPause(): void {
       </table>
       <button id="resume">続ける</button>
       <button id="pause-mute" class="sub-button toggle" aria-pressed="${!audio.muted}">${audio.muted ? '音 なし' : '音 あり'}</button>
+      ${
+        versus
+          ? ''
+          : `<button id="pause-hint" class="sub-button toggle" aria-pressed="${hintOn}">${hintLabel()}</button>
+      <div id="hint-speed-box" class="speed"${hintOn ? '' : ' hidden'}>
+        <div class="speed-head"><span>速さ</span><b id="hint-speed-value">${speedLabel()}</b></div>
+        <input id="hint-speed" type="range" min="0" max="${HINT_SPEEDS.length - 1}" step="1" value="${hintSpeedIndex}" aria-label="ヒントを使うときの速さ">
+        <div class="speed-ends"><span>ゆっくり</span><span>ふつう</span></div>
+      </div>
+      <p id="hint-note" class="best"${hintUsed ? '' : ' hidden'}>${HINT_NOTE}</p>`
+      }
       <button id="restart" class="sub-button">最初から</button>
       <button id="to-menu" class="sub-button">メニューへ</button>
     </div>`;
@@ -1404,11 +1455,34 @@ function showPause(): void {
     mute.setAttribute('aria-pressed', String(!audio.muted));
     if (!audio.muted) audio.ui('confirm');
   });
+  const hint = document.getElementById('pause-hint');
+  hint?.addEventListener('click', () => {
+    hintOn = !hintOn;
+    if (hintOn) hintUsed = true;
+    hint.textContent = hintLabel();
+    hint.setAttribute('aria-pressed', String(hintOn));
+    document.getElementById('hint-note')!.hidden = !hintUsed;
+    // 速さはヒントをつけているときだけ効くので、消しているあいだは隠す
+    document.getElementById('hint-speed-box')!.hidden = !hintOn;
+    audio.ui('confirm');
+  });
+  const speed = document.getElementById('hint-speed') as HTMLInputElement | null;
+  speed?.addEventListener('input', () => {
+    hintSpeedIndex = Number(speed.value);
+    document.getElementById('hint-speed-value')!.textContent = speedLabel();
+  });
   document.getElementById('restart')!.addEventListener('click', () =>
     tour ? startTour() : startGame(lastLevel),
   );
   document.getElementById('to-menu')!.addEventListener('click', () => showMenu('top'));
 }
+
+function hintLabel(): string {
+  return hintOn ? 'ヒント あり' : 'ヒント なし';
+}
+
+/** ヒントをつけたゲームで、一時停止と結果の画面に出す断り書き */
+const HINT_NOTE = 'ヒントを使ったので、このゲームは記録にもランキングにも残さない';
 
 /**
  * オンライン対戦の途中で「やめるか」を聞く。
@@ -1548,7 +1622,7 @@ function showTourResult(t: Tour): void {
   paused = false;
   audio.scene('over');
   const reached = t.index + 1;
-  const updated = saveTourRecords({ reached, score: t.score, completed: t.completed });
+  const updated = hintUsed ? [] : saveTourRecords({ reached, score: t.score, completed: t.completed });
   const mark = (key: string) =>
     updated.includes(key as never) ? ' <span class="new">新記録</span>' : '';
   overlayKind = 'result';
@@ -1567,6 +1641,7 @@ function showTourResult(t: Tour): void {
         <tr><th>最大連続点火</th><td>x${Math.max(1, t.maxCombo)}</td></tr>
         <tr><th>時間</th><td>${formatTime(Math.floor(t.frames / 60))}</td></tr>
       </table>
+      ${hintUsed ? `<p class="best">${HINT_NOTE}</p>` : ''}
       <button id="again">もう一度</button>
       <button id="to-menu" class="sub-button">メニューへ</button>
     </div>`;
@@ -1594,7 +1669,7 @@ function showResult(): void {
   };
   // 記録は 1 人用だけに残す。対戦は相手の攻撃で結果が変わるので、同じ物差しにならない
   const fighting = versus !== null || online !== null;
-  const updated = fighting ? [] : saveRecords(run);
+  const updated = fighting || hintUsed ? [] : saveRecords(run);
   // 得点の代わりに、相手ごとの勝ち負けを数える。
   // 中断（相手の接続が切れた）は勝ちにも負けにもしないので数えない
   const outcome = online ? online.result : versus?.result ?? null;
@@ -1641,7 +1716,9 @@ function showResult(): void {
           ? duel
             ? `<p class="best">${escapeHtml(duel.label)}とは通算 ${formatTally(duel)}</p>`
             : ''
-          : !ranked
+          : hintUsed
+            ? `<p class="best">${HINT_NOTE}</p>`
+            : !ranked
             ? '<p class="best">ランキングには載せない設定（「記録」の「名前と公開」で戻せる）</p>'
             : `<p id="rank-line" class="best">${
                 named ? 'ランキングに送っている…' : '名前を決めるとランキングに載る'
@@ -1654,7 +1731,7 @@ function showResult(): void {
   countUp(overlay.querySelector('table.result tr:first-child td'), game.score);
   document.getElementById('again')!.addEventListener('click', playAgain);
   document.getElementById('to-menu')!.addEventListener('click', () => showMenu('top'));
-  if (fighting || !ranked) return;
+  if (fighting || hintUsed || !ranked) return;
   if (named) {
     void publishResult(run);
     return;
@@ -1725,7 +1802,8 @@ function frame(now: number): void {
     return;
   }
 
-  acc += Math.min(200, now - last);
+  // ヒントでゆっくりにしているときは、進める時間を縮める。盤面の進み方そのものは変えない
+  acc += Math.min(200, now - last) * timeScale();
   last = now;
 
   while (acc >= STEP && running) {
@@ -1761,6 +1839,7 @@ function step(): void {
   } else {
     ev = game.tick();
   }
+  if (hinting()) hinter.update(game, timeScale());
   const dueling = versus !== null || online !== null;
   const L = view.layout;
 
@@ -2250,6 +2329,14 @@ let debugUpdatesApplied = 0;
   /** 合言葉を渡すと、その言葉で相手を探す。e2e が 2 つの端末をつなぐための入口 */
   startOnline(code: string | null = null): void {
     startOnline(code);
+  },
+  /** 練習のヒントの矢印。出していなければ null */
+  /** いまのゲームの速さ（1 が通常）。ヒントを使うときだけ遅くできる */
+  get speed() {
+    return timeScale();
+  },
+  get hint() {
+    return hinting() ? hinter.arrow(game) : null;
   },
   view,
   fx,

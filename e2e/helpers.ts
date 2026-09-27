@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import type { CpuLevel } from '../src/core/cpu';
 import type { Game } from '../src/core/game';
+import type { HintArrow } from '../src/core/hint';
 import type { Tour } from '../src/core/tour';
 import type { Versus } from '../src/core/versus';
 import type { OnlineMatch } from '../src/online/match';
@@ -39,6 +40,10 @@ export interface NovariaHandle {
   startVersus(level?: CpuLevel): void;
   startTour(): void;
   startOnline(code?: string | null): void;
+  /** 練習のヒントの矢印（col 列の row from から row to へ）。出していなければ null */
+  readonly hint: HintArrow | null;
+  /** いまのゲームの速さ（1 が通常）。ヒントを使うときだけ遅くできる */
+  readonly speed: number;
   view: View;
   fx: Effects;
   /** 鳴らした音の並びと、いま鳴っている音源の数 */

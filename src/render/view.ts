@@ -1,5 +1,6 @@
 import { ATMOSPHERE_ROWS, SCORE, SCREEN_OUT_ROW, VISIBLE_ROWS } from '../core/constants';
 import { Game, burnHeat } from '../core/game';
+import type { HintArrow, HintPolicy, HintTier } from '../core/hint';
 import { Kind, isRareMetal, type Meteor, type RivalView } from '../core/types';
 import { Effects } from './effects';
 import { glowSprite, rgba } from './glow';
@@ -8,6 +9,56 @@ import { TILE_RADIUS, bakedFlame, drawTile, makeBakeCanvas, roundRect, setTileSc
 
 /** 得点の並びの左右の余白 */
 const HUD_PAD = 14;
+/**
+ * ヒントの矢印に添える札。頭にこの手の役割（連鎖・点火・仕込み・組み替え・守り・急げ）を置く。
+ * 守りなら守る列が滅亡するまでの秒数を出す。狭い画面でも 1 行に収まる長さにする
+ */
+export function hintText(arrow: HintArrow): string {
+  const aim = arrow.aim;
+  if (arrow.tier !== 'attack') {
+    const head = `${arrow.tier === 'urgent' ? '急げ' : '守り'}・あと約 ${arrow.seconds} 秒`;
+    if (aim.kind === 'shoot') return `${head} 一番上を上へ払う`;
+    if (aim.kind === 'chain') return `${head} 空中で揃え直す`;
+    const way = aim.vertical ? '縦' : '横';
+    if (aim.kind === 'setup') return `${head} ${way}に揃えて崩す（${aim.left} 手）`;
+    return `${head} ${way}に揃えて崩す`;
+  }
+  if (aim.kind === 'chain') return '組み替え・空中で揃え直して連続点火';
+  if (aim.kind === 'shoot') return '一番上を上へ払う';
+  const shape = `${aim.vertical ? '縦' : '横'}に ${aim.count} つ`;
+  if (aim.kind === 'setup') return `仕込み・あと ${aim.left} 手で${shape}`;
+  if (arrow.policy === 'dock') return `ドッキング・${shape}揃えて下から当てる`;
+  return arrow.policy === 'chain' ? `連鎖・${shape}揃えて点火` : `点火・${shape}揃える`;
+}
+
+/** いまの方針の名前と、その方針にいる理由。盤面の外（大気圏の帯の左上）に出す */
+export function policyText(arrow: HintArrow): { name: string; detail: string } {
+  switch (arrow.policy) {
+    case 'guard':
+      return { name: '守る', detail: `崩さないと約 ${arrow.seconds} 秒で滅亡` };
+    case 'air':
+      return { name: '空中で組み替える', detail: 'カタマリが浮いているうちに' };
+    case 'dock':
+      return { name: 'ドッキングを狙う', detail: '落ちてくる前に下から当てる' };
+    case 'chain':
+      return {
+        name: '連鎖をつなぐ',
+        detail:
+          arrow.comboLeft === null
+            ? `×${arrow.combo}・浮いているあいだは切れない`
+            : `×${arrow.combo}・あと ${arrow.comboLeft.toFixed(1)} 秒で切れる`,
+      };
+    case 'build':
+      return { name: '大きく揃える', detail: '連鎖が切れていて余裕がある' };
+  }
+}
+
+/**
+ * 練習のヒントの色。攻めは盤面の差し色（水色）とも連鎖の黄色とも混ざらない緑、
+ * 守りは予兆の橙、急ぎの守りは滅亡の赤。どちらも盤面の警告と同じ色なので、どの列の話かが結びつく
+ */
+const HINT_COLORS: Record<HintTier, string> = { attack: '#8dffb4', guard: UI.warn, urgent: UI.danger };
+const HINT_COLOR = HINT_COLORS.attack;
 /**
  * 盤面が下から組み上がる演出の長さ（フレーム）。ゲームを始めた直後と、惑星を渡った直後に流れる。
  * 描き方を変えるだけで、ゲームはその間も進んでいる（降ってくる隕石が大気圏に届くより短い）
@@ -85,6 +136,9 @@ export class View {
   /** 連鎖の数字を弾ませる。増えた瞬間に 1、数フレームで 0 に戻る */
   private comboPunch = 0;
   private lastCombo = 0;
+  /** 最後に描いたヒントの方針と、それに替わったフレーム。替わった瞬間だけ方針の札を明るくする */
+  private hintPolicy: HintPolicy | null = null;
+  private hintPolicyAt = 0;
   private scoreOf: Game | null = null;
   /** いま body に渡している空の色。同じ値を書き込み直さないために覚えておく */
   private sky = '';
@@ -266,6 +320,7 @@ export class View {
     rival?: RivalView | null,
     rivalName = '相手',
     escape: Escape | null = null,
+    hint: { arrow: HintArrow | null; speed: number } | null = null,
   ): void {
     const ctx = this.ctx;
     const L = this.layout;
@@ -290,6 +345,7 @@ export class View {
     }
     this.drawField(ctx, game, danger);
     this.drawBlocks(ctx, game, fx);
+    if (hint?.arrow) this.drawHint(ctx, hint.arrow, game);
     // 負けの暗い幕。隕石の上に敷き、粒と花火はその上に出す
     fx.drawDim(ctx, L.fieldX, this.rowTop(SCREEN_OUT_ROW - 1), L.fieldW, L.fieldBottomY);
     if (reveal < 1) {
@@ -301,6 +357,8 @@ export class View {
     ctx.restore();
 
     this.drawHud(ctx, game, fx, rival ?? null, rivalName, escape);
+    if (hint) this.drawHintTag(ctx, hint.speed);
+    if (hint?.arrow) this.drawHintPolicy(ctx, hint.arrow, game.frame);
     this.drawBoost(ctx, boostHeld, game.frame);
     // 帯の見出しは盤面の真ん中より少し上に、揺れの外で出す
     fx.drawBanner(ctx, L.fieldX, L.fieldW, this.rowTop(7) + L.cell / 2, L.cell);
@@ -718,6 +776,172 @@ export class View {
       ctx.stroke();
       ctx.restore();
     }
+    ctx.restore();
+  }
+
+  /**
+   * 練習のヒント。運ぶ隕石を縁取り、運び先を点線の枠で囲んで、そのあいだを矢印でつなぐ。
+   * 光りは shadowBlur を使わず、太い薄線の上に細い濃線を重ねて出す
+   */
+  private drawHint(ctx: CanvasRenderingContext2D, arrow: HintArrow, game: Game): void {
+    const L = this.layout;
+    const frame = game.frame;
+    const x = this.colLeft(arrow.col);
+    const fromY = this.rowTop(arrow.from);
+    const toY = this.rowTop(arrow.to);
+    const cx = x + L.cell / 2;
+    // 運ぶ向き。rowTop は row が増えると上へ行くので、画面の y では符号が逆になる
+    const dir = toY > fromY ? 1 : -1;
+    const color = HINT_COLORS[arrow.tier];
+    // 急ぎの守りは速く明滅させる
+    const pulse = 0.65 + 0.35 * Math.sin(frame * (arrow.tier === 'urgent' ? 0.4 : 0.15));
+    const thick = Math.max(5, L.cell * 0.2);
+    const thin = Math.max(2, L.cell * 0.07);
+    const pass = (path: () => void, dash: number[] = []): void => {
+      ctx.setLineDash(dash);
+      path();
+      ctx.strokeStyle = rgba('#05050c', 0.6 * pulse);
+      ctx.lineWidth = thick;
+      ctx.stroke();
+      ctx.strokeStyle = rgba(color, pulse);
+      ctx.lineWidth = thin;
+      ctx.stroke();
+    };
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    pass(() => {
+      ctx.beginPath();
+      roundRect(ctx, x + 2, fromY + 2, L.cell - 4, L.cell - 4, L.cell * TILE_RADIUS);
+    });
+    pass(
+      () => {
+        ctx.beginPath();
+        roundRect(ctx, x + 3, toY + 3, L.cell - 6, L.cell - 6, L.cell * TILE_RADIUS);
+      },
+      [L.cell * 0.14, L.cell * 0.1],
+    );
+    // 矢印は運ぶ隕石の真ん中から、運び先の真ん中まで。隣へ 1 マス運ぶだけの手でも見えるよう、隕石の上に重ねる
+    const y0 = fromY + L.cell / 2;
+    const y1 = toY + L.cell / 2;
+    const head = L.cell * 0.24;
+    ctx.fillStyle = rgba(color, 0.9 * pulse);
+    ctx.beginPath();
+    ctx.arc(cx, y0, L.cell * 0.1, 0, Math.PI * 2);
+    ctx.fill();
+    pass(() => {
+      ctx.beginPath();
+      ctx.moveTo(cx, y0);
+      ctx.lineTo(cx, y1);
+      ctx.moveTo(cx - head, y1 - dir * head);
+      ctx.lineTo(cx, y1);
+      ctx.lineTo(cx + head, y1 - dir * head);
+    });
+    ctx.setLineDash([]);
+    this.drawHintLabel(ctx, hintText(arrow), arrow, game, color);
+    ctx.restore();
+  }
+
+  /**
+   * 矢印に添える狙いの札。盤面の外にはみ出さないよう、列が右寄りなら左に、左寄りなら右に出す。
+   * 隣の列には揃える相手が並んでいることが多いので、札がかかる列の山より上に出して隠さない
+   */
+  private drawHintLabel(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    arrow: HintArrow,
+    game: Game,
+    color: string,
+  ): void {
+    const col = arrow.col;
+    const L = this.layout;
+    const size = Math.max(11, Math.round(L.cell * 0.28));
+    ctx.font = `800 ${size}px ${SANS}`;
+    const padX = size * 0.6;
+    const w = ctx.measureText(text).width + padX * 2;
+    const h = size * 1.7;
+    const cols = Math.round(L.fieldW / L.cell);
+    const right = col < cols / 2;
+    const x = right
+      ? Math.min(this.colLeft(col + 1) + 4, L.fieldX + L.fieldW - w - 2)
+      : Math.max(this.colLeft(col) - w - 4, L.fieldX + 2);
+    let peak = Math.max(arrow.from, arrow.to);
+    for (let c = Math.floor((x - L.fieldX) / L.cell); c <= Math.floor((x + w - L.fieldX) / L.cell); c++) {
+      peak = Math.max(peak, (game.ground[c]?.length ?? 0) - 1);
+    }
+    const y = Math.round(this.rowTop(peak) - h - 4);
+    ctx.fillStyle = 'rgba(6,6,14,0.88)';
+    roundRect(ctx, x, y, w, h, h / 2);
+    ctx.fill();
+    ctx.strokeStyle = rgba(color, 0.8);
+    ctx.lineWidth = Math.max(1.5, L.cell * 0.04);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + padX, y + h / 2 + 1);
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  /**
+   * いまの方針。大気圏の帯の左上に 1 行で出す。盤面の上には矢印の札だけを置き、散らからないようにする。
+   * 方針が替わった瞬間は札を明るくして、切り替わったことに気づけるようにする
+   */
+  private drawHintPolicy(ctx: CanvasRenderingContext2D, arrow: HintArrow, frame: number): void {
+    if (arrow.policy !== this.hintPolicy) {
+      this.hintPolicy = arrow.policy;
+      this.hintPolicyAt = frame;
+    }
+    const L = this.layout;
+    const { name, detail } = policyText(arrow);
+    const color = HINT_COLORS[arrow.tier];
+    const size = Math.max(10, Math.round(L.cell * 0.26));
+    const x = L.fieldX + HUD_PAD;
+    const y = Math.round(this.rowTop(SCREEN_OUT_ROW - 1) + L.cell * 0.12);
+    const h = Math.round(size * 1.6);
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.font = `800 ${size}px ${SANS}`;
+    const nameW = ctx.measureText(name).width;
+    ctx.font = `700 ${Math.round(size * 0.9)}px ${SANS}`;
+    const detailW = ctx.measureText(detail).width;
+    const padX = size * 0.5;
+    const w = Math.min(L.fieldW - HUD_PAD * 2, nameW + detailW + padX * 3);
+    const fresh = Math.max(0, 1 - (frame - this.hintPolicyAt) / 45);
+    ctx.fillStyle = fresh > 0 ? rgba(color, 0.18 + 0.3 * fresh) : 'rgba(6,6,14,0.7)';
+    roundRect(ctx, x, y, w, h, h / 2);
+    ctx.fill();
+    ctx.strokeStyle = rgba(color, 0.5 + 0.5 * fresh);
+    ctx.lineWidth = Math.max(1, L.cell * 0.03);
+    ctx.stroke();
+    ctx.font = `800 ${size}px ${SANS}`;
+    ctx.fillStyle = fresh > 0.5 ? '#ffffff' : color;
+    ctx.fillText(name, x + padX, y + h / 2 + 1);
+    ctx.font = `700 ${Math.round(size * 0.9)}px ${SANS}`;
+    ctx.fillStyle = UI.textDim;
+    // 狭い画面では説明を札の中で切る（盤面の外へはみ出さない）
+    ctx.beginPath();
+    ctx.rect(x, y, w - padX * 0.5, h);
+    ctx.clip();
+    ctx.fillText(detail, x + padX * 2 + nameW, y + h / 2 + 1);
+    ctx.restore();
+  }
+
+  /** ヒントをつけている印。一時停止ボタンの下に出す（このゲームは記録に残らない） */
+  private drawHintTag(ctx: CanvasRenderingContext2D, speed: number): void {
+    const L = this.layout;
+    const size = Math.max(9, Math.round(L.cell * 0.22));
+    ctx.save();
+    ctx.font = `800 ${size}px ${SANS}`;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = HINT_COLOR;
+    spacing(ctx, Math.max(1.5, L.cell * 0.05));
+    const y = L.pause.y + L.pause.size + size + 4;
+    ctx.fillText('HINT', L.pause.x, y);
+    // ゆっくりにしているときは、その下の行に速さを出す。横に並べると連鎖の数字に重なる
+    if (speed < 1) ctx.fillText(`×${speed}`, L.pause.x, y + size + 3);
+    spacing(ctx, 0);
     ctx.restore();
   }
 

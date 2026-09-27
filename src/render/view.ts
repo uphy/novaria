@@ -1,6 +1,6 @@
 import { ATMOSPHERE_ROWS, SCORE, SCREEN_OUT_ROW, VISIBLE_ROWS } from '../core/constants';
 import { Game, burnHeat } from '../core/game';
-import type { HintArrow, HintTier } from '../core/hint';
+import type { HintArrow, HintPolicy, HintTier } from '../core/hint';
 import { Kind, isRareMetal, type Meteor, type RivalView } from '../core/types';
 import { Effects } from './effects';
 import { glowSprite, rgba } from './glow';
@@ -10,24 +10,44 @@ import { TILE_RADIUS, bakedFlame, drawTile, makeBakeCanvas, roundRect, setTileSc
 /** 得点の並びの左右の余白 */
 const HUD_PAD = 14;
 /**
- * ヒントの矢印に添える札。頭に攻め・守り・急げを置き、守りなら守る列が滅亡するまでの秒数を出す。
- * 狭い画面でも 1 行に収まる長さにする
+ * ヒントの矢印に添える札。頭にこの手の役割（連鎖・点火・仕込み・組み替え・守り・急げ）を置く。
+ * 守りなら守る列が滅亡するまでの秒数を出す。狭い画面でも 1 行に収まる長さにする
  */
 export function hintText(arrow: HintArrow): string {
   const aim = arrow.aim;
-  if (arrow.tier === 'attack') {
-    if (aim.kind === 'chain') return '攻め・空中で揃え直して連続点火';
-    if (aim.kind === 'shoot') return '攻め・一番上を上へ払う';
+  if (arrow.tier !== 'attack') {
+    const head = `${arrow.tier === 'urgent' ? '急げ' : '守り'}・あと約 ${arrow.seconds} 秒`;
+    if (aim.kind === 'shoot') return `${head} 一番上を上へ払う`;
+    if (aim.kind === 'chain') return `${head} 空中で揃え直す`;
     const way = aim.vertical ? '縦' : '横';
-    if (aim.kind === 'setup') return `攻め・仕込み あと ${aim.left} 手で${way}に ${aim.count} つ`;
-    return `攻め・${way}に ${aim.count} つ揃えて点火`;
+    if (aim.kind === 'setup') return `${head} ${way}に揃えて崩す（${aim.left} 手）`;
+    return `${head} ${way}に揃えて崩す`;
   }
-  const head = `${arrow.tier === 'urgent' ? '急げ' : '守り'}・あと約 ${arrow.seconds} 秒`;
-  if (aim.kind === 'shoot') return `${head} 一番上を上へ払う`;
-  if (aim.kind === 'chain') return `${head} 空中で揃え直す`;
-  const way = aim.vertical ? '縦' : '横';
-  if (aim.kind === 'setup') return `${head} ${way}に揃えて崩す（${aim.left} 手）`;
-  return `${head} ${way}に揃えて崩す`;
+  if (aim.kind === 'chain') return '組み替え・空中で揃え直して連続点火';
+  if (aim.kind === 'shoot') return '一番上を上へ払う';
+  const shape = `${aim.vertical ? '縦' : '横'}に ${aim.count} つ`;
+  if (aim.kind === 'setup') return `仕込み・あと ${aim.left} 手で${shape}`;
+  return arrow.policy === 'chain' ? `連鎖・${shape}揃えて点火` : `点火・${shape}揃える`;
+}
+
+/** いまの方針の名前と、その方針にいる理由。盤面の外（大気圏の帯の左上）に出す */
+export function policyText(arrow: HintArrow): { name: string; detail: string } {
+  switch (arrow.policy) {
+    case 'guard':
+      return { name: '守る', detail: `崩さないと、あと約 ${arrow.seconds} 秒で滅亡` };
+    case 'air':
+      return { name: '空中で組み替える', detail: 'カタマリが浮いているうちに' };
+    case 'chain':
+      return {
+        name: '連鎖をつなぐ',
+        detail:
+          arrow.comboLeft === null
+            ? `×${arrow.combo}・浮いているあいだは切れない`
+            : `×${arrow.combo}・あと ${arrow.comboLeft.toFixed(1)} 秒で切れる`,
+      };
+    case 'build':
+      return { name: '大きく揃える', detail: '連鎖が切れていて、どの列にも余裕がある' };
+  }
 }
 
 /**
@@ -113,6 +133,9 @@ export class View {
   /** 連鎖の数字を弾ませる。増えた瞬間に 1、数フレームで 0 に戻る */
   private comboPunch = 0;
   private lastCombo = 0;
+  /** 最後に描いたヒントの方針と、それに替わったフレーム。替わった瞬間だけ方針の札を明るくする */
+  private hintPolicy: HintPolicy | null = null;
+  private hintPolicyAt = 0;
   private scoreOf: Game | null = null;
   /** いま body に渡している空の色。同じ値を書き込み直さないために覚えておく */
   private sky = '';
@@ -332,6 +355,7 @@ export class View {
 
     this.drawHud(ctx, game, fx, rival ?? null, rivalName, escape);
     if (hint) this.drawHintTag(ctx);
+    if (hint?.arrow) this.drawHintPolicy(ctx, hint.arrow, game.frame);
     this.drawBoost(ctx, boostHeld, game.frame);
     // 帯の見出しは盤面の真ん中より少し上に、揺れの外で出す
     fx.drawBanner(ctx, L.fieldX, L.fieldW, this.rowTop(7) + L.cell / 2, L.cell);
@@ -854,6 +878,47 @@ export class View {
     ctx.textBaseline = 'middle';
     ctx.fillText(text, x + padX, y + h / 2 + 1);
     ctx.textBaseline = 'alphabetic';
+  }
+
+  /**
+   * いまの方針。大気圏の帯の左上に 1 行で出す。盤面の上には矢印の札だけを置き、散らからないようにする。
+   * 方針が替わった瞬間は札を明るくして、切り替わったことに気づけるようにする
+   */
+  private drawHintPolicy(ctx: CanvasRenderingContext2D, arrow: HintArrow, frame: number): void {
+    if (arrow.policy !== this.hintPolicy) {
+      this.hintPolicy = arrow.policy;
+      this.hintPolicyAt = frame;
+    }
+    const L = this.layout;
+    const { name, detail } = policyText(arrow);
+    const color = HINT_COLORS[arrow.tier];
+    const size = Math.max(10, Math.round(L.cell * 0.26));
+    const x = L.fieldX + HUD_PAD;
+    const y = Math.round(this.rowTop(SCREEN_OUT_ROW - 1) + L.cell * 0.12);
+    const h = Math.round(size * 1.6);
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'left';
+    ctx.font = `800 ${size}px ${SANS}`;
+    const nameW = ctx.measureText(name).width;
+    ctx.font = `700 ${Math.round(size * 0.9)}px ${SANS}`;
+    const detailW = ctx.measureText(detail).width;
+    const padX = size * 0.5;
+    const w = Math.min(L.fieldW - HUD_PAD * 2, nameW + detailW + padX * 3);
+    const fresh = Math.max(0, 1 - (frame - this.hintPolicyAt) / 45);
+    ctx.fillStyle = fresh > 0 ? rgba(color, 0.18 + 0.3 * fresh) : 'rgba(6,6,14,0.7)';
+    roundRect(ctx, x, y, w, h, h / 2);
+    ctx.fill();
+    ctx.strokeStyle = rgba(color, 0.5 + 0.5 * fresh);
+    ctx.lineWidth = Math.max(1, L.cell * 0.03);
+    ctx.stroke();
+    ctx.font = `800 ${size}px ${SANS}`;
+    ctx.fillStyle = fresh > 0.5 ? '#ffffff' : color;
+    ctx.fillText(name, x + padX, y + h / 2 + 1);
+    ctx.font = `700 ${Math.round(size * 0.9)}px ${SANS}`;
+    ctx.fillStyle = UI.textDim;
+    ctx.fillText(detail, x + padX * 2 + nameW, y + h / 2 + 1);
+    ctx.restore();
   }
 
   /** ヒントをつけている印。一時停止ボタンの下に出す（このゲームは記録に残らない） */

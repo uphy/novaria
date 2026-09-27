@@ -205,7 +205,7 @@ function followHints(
   seed: number,
   react: number,
   move: number,
-): { seconds: number; score: number; launched: number; guard: number; shoot: number } {
+): { seconds: number; score: number; launched: number; maxCombo: number; guard: number; shoot: number; chain: number } {
   const game = new Game({ seed });
   const hinter = new Hinter();
   let seen = '';
@@ -215,6 +215,7 @@ function followHints(
   let guard = 0;
   let shoot = 0;
   let shown = 0;
+  let chain = 0;
   while (!game.over && frames < 60 * 60 * 10) {
     hinter.update(game);
     const a = hinter.arrow(game);
@@ -222,6 +223,7 @@ function followHints(
       shown++;
       if (a.tier !== 'attack') guard++;
       if (a.aim.kind === 'shoot') shoot++;
+      if (a.policy === 'chain') chain++;
     }
     const key = a ? `${a.col}:${Math.round(a.from)}:${Math.round(a.to)}` : '';
     if (key !== seen) {
@@ -243,6 +245,8 @@ function followHints(
     seconds: frames / 60,
     score: game.score,
     launched: game.launched.normal + game.launched.dust + game.launched.rare,
+    maxCombo: game.maxCombo,
+    chain: shown > 0 ? chain / shown : 0,
     guard: shown > 0 ? guard / shown : 0,
     shoot: shown > 0 ? shoot / shown : 0,
   };
@@ -250,12 +254,11 @@ function followHints(
 
 function hints(runs: number): void {
   const base = { ...HINT_TUNING };
+  // 守りに替える時点を比べるときは、guardSpare を振った行を足す（docs/decisions.md「練習のヒント」）
   const variants: [string, Partial<typeof HINT_TUNING>][] = [
-    ['守りなし（攻めの手本だけ）', { guardSpare: -1e9, urgentSpare: -1e9 }],
-    ['崩す手の時間 + 2 秒で守り', { guardSpare: 120 }],
-    ['崩す手の時間 + 4 秒で守り', { guardSpare: 240 }],
-    ['崩す手の時間 + 6 秒で守り', { guardSpare: 360 }],
-    ['崩す手の時間 + 9 秒で守り', { guardSpare: 540 }],
+    ['連鎖をつながない（守る・組み替える・大きく揃える）', { chainPolicy: false }],
+    ['連鎖をつなぐ（浮いているあいだは 2 秒と見積もる）', { chainPolicy: true, airWindow: 120 }],
+    ['連鎖をつなぐ（浮いているあいだは 3 秒と見積もる）', { chainPolicy: true, airWindow: 180 }],
   ];
   for (const [react, move] of [
     [60, 40],
@@ -269,6 +272,8 @@ function hints(runs: number): void {
       console.log(`  ${label}`);
       console.log(`    生存秒 ${stats(results.map((r) => r.seconds))}`);
       console.log(`    得点   ${stats(results.map((r) => r.score))}`);
+      console.log(`    毎分の得点 ${stats(results.map((r) => (r.score / r.seconds) * 60))}`);
+      console.log(`    最大連続 ${stats(results.map((r) => r.maxCombo))} / 連鎖の方針の割合 ${stats(results.map((r) => r.chain * 100))} %`);
       console.log(`    守りの矢印の割合 ${stats(results.map((r) => r.guard * 100))} % / うち払う ${stats(results.map((r) => r.shoot * 100), 1)} %`);
     }
   }

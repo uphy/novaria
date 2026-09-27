@@ -36,6 +36,10 @@ export const HINT_TUNING = {
   unknownMoves: 3,
   /** 攻めの手本を選ぶとき、2 手目から 1 手ごとに値打ちから引くぶん。仕込みより、すぐ揃う手を先に出す */
   moveCost: 2,
+  /** 連鎖をつなぐ方針を使うか。`pnpm sim hint` が方針なしと比べるために切る */
+  chainPolicy: true,
+  /** 空中にカタマリがあって連鎖が切れないあいだ、次の点火に使えると見積もる時間（フレーム） */
+  airWindow: 180,
 };
 /** 手本がまだ使えるかを確かめる間隔（フレーム） */
 const RETHINK_FRAMES = 6;
@@ -44,6 +48,14 @@ const SWITCH_FRAMES = 60;
 
 /** 手本の段階。攻め（得点を稼ぐ）・守り・急ぎの守り */
 export type HintTier = 'attack' | 'guard' | 'urgent';
+/**
+ * 手本の方針。どの方針で手を選んだかをそのまま出す（手を選んだあとに説明を貼るのではない）。
+ * - guard … 守る。滅亡しそうな列を崩す
+ * - air … 空中で組み替える。浮いているカタマリの中で揃え直して、もう一段上げる
+ * - chain … 連鎖をつなぐ。切れる前に次の点火を打つ。得点は「マス数 × 連鎖倍率」なので得点のほとんどがここで決まる
+ * - build … 大きく揃える。連鎖が切れていて余裕があるときに、大きく上がる形を作る
+ */
+export type HintPolicy = 'guard' | 'air' | 'chain' | 'build';
 /** 手の狙い。CPU の思考が出す狙いに、急ぎの守りでだけ使う「一番上を上へ払う」を足したもの */
 export type HintMove = HintAim | { kind: 'shoot' };
 
@@ -54,8 +66,13 @@ export interface HintArrow {
   to: number;
   aim: HintMove;
   tier: HintTier;
+  policy: HintPolicy;
   /** 守りなら、守る列が滅亡するまでの見積もり（秒）。攻めなら null */
   seconds: number | null;
+  /** いまの連鎖の数（0 なら切れている） */
+  combo: number;
+  /** 連鎖が切れるまでの残り（秒）。切れていれば 0、空中にカタマリがあって減っていなければ null */
+  comboLeft: number | null;
 }
 
 /** 列の中の 1 マス。row はその隕石の世界座標 */
@@ -83,6 +100,7 @@ interface Held {
   guard: number | null;
   /** 一番上を払う手本なら、払う隕石の id */
   shoot: number | null;
+  policy: HintPolicy;
 }
 
 /** 列の危なさ。left は滅亡までの見積もり、need はその列を崩す一番早い手にかかる時間（どちらもフレーム） */
@@ -176,15 +194,22 @@ export class Hinter {
     // 守りの要る列が出てきたら、揃う途中の攻めの手本でも替える。
     // 守っている列より早く滅亡しそうな列が出てきたときも、赤くなるのを待たずに乗り換える
     const outranked =
-      danger !== null &&
-      held !== null &&
-      (held.guard === null ||
-        (held.guard !== danger.col && danger.left < this.pressures[held.guard].left - SWITCH_FRAMES));
+      (danger !== null &&
+        held !== null &&
+        (held.guard === null ||
+          (held.guard !== danger.col && danger.left < this.pressures[held.guard].left - SWITCH_FRAMES))) ||
+      // 大きく揃える手本の途中で連鎖が始まり、残りの手数では切れるまでに間に合わないなら、連鎖をつなぐ手に替える
+      (danger === null &&
+        held !== null &&
+        held.policy === 'build' &&
+        game.combo > 0 &&
+        HINT_TUNING.chainPolicy &&
+        handFrames(current(game, held)?.left ?? 0) > chainBudget(game));
     if (valid && !outranked) return;
 
     const next = think(game, plans, danger);
-    // 守りの手が見つからず攻めに戻るだけなら、使える攻めの手本はそのまま出し続ける
-    if (valid && held.guard === null && next?.guard === null) return;
+    // 守りの手が見つからず同じ方針に戻るだけなら、使える手本はそのまま出し続ける
+    if (valid && held.guard === null && next?.guard === null && next.policy === held.policy) return;
     this.held = next;
   }
 
@@ -195,19 +220,39 @@ export class Hinter {
     const step = current(game, h);
     if (!step) return null;
     const guard = h.guard;
-    if (guard === null) return { ...step, aim: h.aim, tier: 'attack', seconds: null };
+    const comboLeft = game.comboLeft();
+    const base = {
+      col: step.col,
+      from: step.from,
+      to: step.to,
+      aim: h.aim,
+      policy: h.policy,
+      combo: game.combo,
+      comboLeft: comboLeft === null ? null : comboLeft / 60,
+    };
+    if (guard === null) return { ...base, tier: 'attack', seconds: null };
     const left = columnLeft(game, guard);
     const need = this.pressures[guard]?.need ?? handFrames(1);
     return {
-      ...step,
-      aim: h.aim,
+      ...base,
       tier: game.breakTimers[guard] !== null || left < need + HINT_TUNING.urgentSpare ? 'urgent' : 'guard',
       seconds: Math.max(1, Math.ceil(left / 60)),
     };
   }
 }
 
-/** 手本を選ぶ。守りの要る列があれば、先にその列を崩す手を探す */
+/**
+ * 連鎖が切れるまでに次の点火に使える時間（フレーム）。
+ * 空中にカタマリがあるあいだは切れないが、落ちてきて燃えカスが還元されれば切れるので、決まった長さで見積もる
+ */
+function chainBudget(game: Game): number {
+  return game.comboLeft() ?? HINT_TUNING.airWindow;
+}
+
+/**
+ * 手本を選ぶ。方針は上から順に見て、打てる手がある最初の方針にする。
+ * 守る → 空中で組み替える → 連鎖をつなぐ → 大きく揃える
+ */
 function think(game: Game, plans: Plan[], danger: Pressure | null): Held | null {
   if (danger) {
     const guard = guardPlan(game, plans, danger);
@@ -224,7 +269,12 @@ function think(game: Game, plans: Plan[], danger: Pressure | null): Held | null 
       aim: { kind: 'chain' },
       guard: null,
       shoot: null,
+      policy: 'air',
     };
+  }
+  if (game.combo > 0 && HINT_TUNING.chainPolicy) {
+    const chain = chainPlan(game, plans);
+    if (chain) return chain;
   }
   // CPU の値打ちは手数 1 つにつき 0.6 を引くだけで、速い手を前提にしている。人には手数がもっと重いので、さらに引く
   let best: { plan: Plan; score: number } | null = null;
@@ -232,7 +282,23 @@ function think(game: Game, plans: Plan[], danger: Pressure | null): Held | null 
     const score = plan.value - (plan.moves.length - 1) * HINT_TUNING.moveCost;
     if (best === null || score > best.score) best = { plan, score };
   }
-  return best ? fromGround(game, best.plan, null) : null;
+  return best ? fromGround(game, best.plan, null, 'build') : null;
+}
+
+/**
+ * 連鎖をつなぐ手本。切れるまでに人の手で打ち切れる案のうち、点火するマスが多く、手数の少ないものを選ぶ。
+ * 点火の得点は「マス数 × 連鎖倍率」なので、倍率が乗っているうちはマス数がそのまま得点になる
+ */
+function chainPlan(game: Game, plans: Plan[]): Held | null {
+  const budget = chainBudget(game);
+  let best: { plan: Plan; score: number } | null = null;
+  for (const plan of plans) {
+    if (handFrames(plan.moves.length) > budget) continue;
+    const cells = plan.aim.kind === 'chain' ? 3 : plan.aim.count;
+    const score = cells * 2 - plan.moves.length * HINT_TUNING.moveCost + plan.value * 0.1;
+    if (best === null || score > best.score) best = { plan, score };
+  }
+  return best ? fromGround(game, best.plan, null, 'chain') : null;
 }
 
 /**
@@ -251,7 +317,7 @@ function guardPlan(game: Game, plans: Plan[], danger: Pressure): Held | null {
     const score = (plan.out.get(col) ?? 0) * 2 + lifted - plan.moves.length * 4 + plan.value * 0.1;
     if (best === null || score > best.score) best = { plan, score };
   }
-  if (best) return fromGround(game, best.plan, col);
+  if (best) return fromGround(game, best.plan, col, 'guard');
   if (danger.tier !== 'urgent') return null;
   const top = game.ground[col].at(-1);
   if (!top) return null;
@@ -264,10 +330,11 @@ function guardPlan(game: Game, plans: Plan[], danger: Pressure): Held | null {
     aim: { kind: 'shoot' },
     guard: col,
     shoot: top.id,
+    policy: 'guard',
   };
 }
 
-function fromGround(game: Game, plan: Plan, guard: number | null): Held {
+function fromGround(game: Game, plan: Plan, guard: number | null, policy: HintPolicy): Held {
   return {
     where: 'ground',
     lumpId: 0,
@@ -277,6 +344,7 @@ function fromGround(game: Game, plan: Plan, guard: number | null): Held {
     aim: plan.aim,
     guard,
     shoot: null,
+    policy,
   };
 }
 
@@ -296,16 +364,16 @@ function resolve(game: Game, where: 'ground' | 'lump', lumpId: number, moves: Mo
 }
 
 /**
- * いま打つ手。残りの手順を列の写しの上で打ってみて、揃う形にならなければ null（手本は古い）。
+ * いま打つ手と、それを含めた残りの手数。残りの手順を列の写しの上で打ってみて、揃う形にならなければ null（手本は古い）。
  * 揃え終えていても null
  */
-function current(game: Game, h: Held): { col: number; from: number; to: number } | null {
+function current(game: Game, h: Held): { col: number; from: number; to: number; left: number } | null {
   if (h.shoot !== null && h.guard !== null) {
     const stack = game.ground[h.guard];
     const top = stack.length - 1;
     if (top < 0 || stack[top].id !== h.shoot) return null;
     // 運び先は無い。一番上から上へ払う向きだけを出す
-    return { col: h.guard, from: top, to: top + 1.5 };
+    return { col: h.guard, from: top, to: top + 1.5, left: 1 };
   }
   const actual = new Map<number, Slot[]>();
   const lists = new Map<number, Slot[]>();
@@ -318,7 +386,7 @@ function current(game: Game, h: Held): { col: number; from: number; to: number }
     }
     return lists.get(col)!;
   };
-  let next: { col: number; from: number; to: number } | null = null;
+  let next: { col: number; from: number; to: number; left: number } | null = null;
   for (const step of h.steps) {
     const list = listOf(step.col);
     if (!list) return null;
@@ -328,8 +396,9 @@ function current(game: Game, h: Held): { col: number; from: number; to: number }
     // ここより前の手はどれも打ち終えているので、写しの添字と盤面の添字は同じ
     if (next === null) {
       const real = actual.get(step.col)!;
-      next = { col: step.col, from: real[i].row, to: real[step.to].row };
+      next = { col: step.col, from: real[i].row, to: real[step.to].row, left: 0 };
     }
+    next.left++;
     list.splice(step.to, 0, ...list.splice(i, 1));
   }
   if (next === null) return null;

@@ -31,7 +31,10 @@ describe('ヒント', () => {
       to: 0,
       aim: { kind: 'ignite', vertical: false, count: 3, breaks: false },
       tier: 'attack',
+      policy: 'build',
       seconds: null,
+      combo: 0,
+      comboLeft: 0,
     });
   });
 
@@ -158,6 +161,29 @@ describe('ヒント', () => {
     const hinter = new Hinter();
     hinter.update(g);
     expect(hinter.arrow(g)).toMatchObject({ col: 4, from: 11, aim: { kind: 'shoot' }, tier: 'urgent' });
+  });
+
+  it('連鎖が続いていて、切れるまでに打ち切れる手があれば「連鎖をつなぐ」方針にする', () => {
+    const g = oneMoveAway();
+    // 連鎖の途中にする。打ち上げたあと 200 フレームは切れない
+    const inner = g as unknown as { chainCombo: number; comboGrace: number };
+    inner.chainCombo = 3;
+    inner.comboGrace = 200;
+    const hinter = new Hinter();
+    hinter.update(g);
+    expect(hinter.arrow(g)).toMatchObject({ col: 2, policy: 'chain', combo: 3 });
+    expect(hinter.arrow(g)!.comboLeft).toBeCloseTo(200 / 60, 1);
+  });
+
+  it('連鎖が切れるまでに人の手では打ち切れないなら、連鎖はあきらめて大きく揃える方針にする', () => {
+    const g = oneMoveAway();
+    const inner = g as unknown as { chainCombo: number; comboGrace: number };
+    inner.chainCombo = 3;
+    // 気づいて 1 手運ぶだけで 100 フレームかかる
+    inner.comboGrace = 60;
+    const hinter = new Hinter();
+    hinter.update(g);
+    expect(hinter.arrow(g)?.policy).toBe('build');
   });
 
   it('手本どおりに運ぶと、その矢印は消える', () => {

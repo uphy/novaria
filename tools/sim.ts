@@ -201,16 +201,28 @@ function tour(runs: number): void {
  * 人の代わりに、ヒントの手だけを打つ。矢印が出てから react フレーム見てから運び、運んだあとは move フレーム休む。
  * 指は 1 度で運び切る（なぞる途中で揃えばそこで止まるのは人と同じ）
  */
-function followHints(seed: number, react: number, move: number): { seconds: number; score: number; launched: number } {
+function followHints(
+  seed: number,
+  react: number,
+  move: number,
+): { seconds: number; score: number; launched: number; guard: number; shoot: number } {
   const game = new Game({ seed });
   const hinter = new Hinter();
   let seen = '';
   let seenAt = 0;
   let rest = 0;
   let frames = 0;
+  let guard = 0;
+  let shoot = 0;
+  let shown = 0;
   while (!game.over && frames < 60 * 60 * 10) {
     hinter.update(game);
     const a = hinter.arrow(game);
+    if (a) {
+      shown++;
+      if (a.tier !== 'attack') guard++;
+      if (a.aim.kind === 'shoot') shoot++;
+    }
     const key = a ? `${a.col}:${Math.round(a.from)}:${Math.round(a.to)}` : '';
     if (key !== seen) {
       seen = key;
@@ -231,18 +243,19 @@ function followHints(seed: number, react: number, move: number): { seconds: numb
     seconds: frames / 60,
     score: game.score,
     launched: game.launched.normal + game.launched.dust + game.launched.rare,
+    guard: shown > 0 ? guard / shown : 0,
+    shoot: shown > 0 ? shoot / shown : 0,
   };
 }
 
 function hints(runs: number): void {
   const base = { ...HINT_TUNING };
   const variants: [string, Partial<typeof HINT_TUNING>][] = [
-    ['守りなし（攻めの手本だけ）', { guardFrames: -1e9, urgentFrames: -1e9 }],
-    ['守り 余裕 20 秒から', { guardFrames: 1200 }],
-    ['守り 余裕 6 秒から', { guardFrames: 360 }],
-    ['守り 余裕 10 秒から', { guardFrames: 600 }],
-    ['守り 余裕 15 秒から', { guardFrames: 900 }],
-    ['守り 余裕 12 秒から', { guardFrames: 720 }],
+    ['守りなし（攻めの手本だけ）', { guardSpare: -1e9, urgentSpare: -1e9 }],
+    ['崩す手の時間 + 2 秒で守り', { guardSpare: 120 }],
+    ['崩す手の時間 + 4 秒で守り', { guardSpare: 240 }],
+    ['崩す手の時間 + 6 秒で守り', { guardSpare: 360 }],
+    ['崩す手の時間 + 9 秒で守り', { guardSpare: 540 }],
   ];
   for (const [react, move] of [
     [60, 40],
@@ -256,6 +269,7 @@ function hints(runs: number): void {
       console.log(`  ${label}`);
       console.log(`    生存秒 ${stats(results.map((r) => r.seconds))}`);
       console.log(`    得点   ${stats(results.map((r) => r.score))}`);
+      console.log(`    守りの矢印の割合 ${stats(results.map((r) => r.guard * 100))} % / うち払う ${stats(results.map((r) => r.shoot * 100), 1)} %`);
     }
   }
   Object.assign(HINT_TUNING, base);

@@ -97,10 +97,11 @@ describe('ヒント', () => {
   });
 
   it('レベルが上がって高い列が間に合わなくなると、攻めの手本を守りに替える', () => {
-    // 左の 3 列には攻めの手。5 列目は 8 段で、下の三角を 1 つ上げれば縦に揃って崩れる。
+    // 左の 3 列には攻めの手。5 列目は 10 段で、下の三角を 1 つ上げれば縦に揃って崩れる。
     // 開始直後なら 1 列に 1 個降るのは 12 秒に 1 度なので、まだ攻めでいい
     const tall = [
-      Kind.Circle, Kind.Drop, Kind.Square, Kind.Hexagon, Kind.Triangle, Kind.Circle, Kind.Triangle, Kind.Triangle,
+      Kind.Circle, Kind.Drop, Kind.Square, Kind.Hexagon, Kind.Circle,
+      Kind.Drop, Kind.Triangle, Kind.Square, Kind.Triangle, Kind.Triangle,
     ];
     const g = board([[Kind.Circle], [Kind.Circle], [Kind.Drop, Kind.Circle], [], tall]);
     const hinter = new Hinter();
@@ -113,6 +114,40 @@ describe('ヒント', () => {
     expect(arrow.col).toBe(4);
     expect(['guard', 'urgent']).toContain(arrow.tier);
     expect(arrow.seconds).toBeGreaterThan(0);
+  });
+
+  it('まだ間に合う守りでは、一番上を上へ払う手を出さない', () => {
+    // 10 段で、どの柄も 2 つまで。崩す手が無い
+    const kinds = [Kind.Circle, Kind.Drop, Kind.Square, Kind.Hexagon, Kind.Pentagon];
+    const g = board([[], [], [], [], [...kinds, ...kinds]]);
+    g.frame = 60 * 60 * 30;
+    const hinter = new Hinter();
+    for (let i = 0; i < 12; i++) hinter.update(g);
+    expect(hinter.arrow(g)?.aim.kind).not.toBe('shoot');
+  });
+
+  it('守っている列より早く滅亡しそうな列が出たら、赤くなるのを待たずにそちらへ乗り換える', () => {
+    // 2 列目は 10 段、7 列目は 8 段。どちらも三角を 1 つ上げれば縦に揃って崩れる
+    const column = (filler: Kind[]) => [...filler, Kind.Triangle, Kind.Square, Kind.Triangle, Kind.Triangle];
+    const g = board([
+      [],
+      column([Kind.Circle, Kind.Drop, Kind.Hexagon, Kind.Circle, Kind.Drop, Kind.Hexagon]),
+      [],
+      [],
+      [],
+      [],
+      column([Kind.Circle, Kind.Drop, Kind.Hexagon, Kind.Pentagon]),
+    ]);
+    g.frame = 60 * 60 * 30;
+    const hinter = new Hinter();
+    for (let i = 0; i < 12; i++) hinter.update(g);
+    expect(hinter.arrow(g)).toMatchObject({ col: 1, tier: 'guard' });
+    // 7 列目の上に 3 つ積もって 11 段になる。2 列目より 1 段高い
+    for (const kind of [Kind.Pentagon, Kind.Hexagon, Kind.Circle]) {
+      g.ground[6].push({ id: nextId++, kind, revert: 0, fromAttack: false, ignitedAt: -1 });
+    }
+    for (let i = 0; i < 12; i++) hinter.update(g);
+    expect(hinter.arrow(g)).toMatchObject({ col: 6, tier: 'guard' });
   });
 
   it('滅亡まで数えている列を崩す手が無ければ、一番上を上へ払う手を出す', () => {

@@ -8,7 +8,7 @@
  * 替えるのは、揃わなくなったとき、揃い終えたとき、守りの要る列が出てきたときだけ。
  *
  * 守りの要否は段数ではなく時間で決める。
- * 列が埋まるまでの時間をいまのレベルの降り方から逆算し、人が崩すのにかかる時間を引いた余裕で見る
+ * 列が埋まるまでの時間をいまのレベルの降り方から逆算し、その列を崩す一番早い手に人がかかる時間と比べる
  */
 import { VISIBLE_ROWS } from './constants';
 import { groundPlans, planLump, type HintAim, type Move, type Plan } from './cpu';
@@ -25,19 +25,26 @@ export const HINT_TUNING = {
   moveFrames: 40,
   /** 列が埋まる時間は平均の降り方のこの割合で見積もる。どの列に降るかは運なので短めに取る */
   fillCaution: 0.6,
-  /** 余裕（残り時間 − 人が 1 手で崩すのにかかる時間）がこれを切ったら守りの手本にする（フレーム） */
-  guardFrames: 900,
-  /** 余裕がこれを切ったら急ぎの守りにする（フレーム）。滅亡まで数え始めた列も急ぎ */
-  urgentFrames: 120,
+  /**
+   * 列の残り時間が「その列を崩す一番早い手にかかる時間」にこれを足したものを切ったら守りの手本にする（フレーム）。
+   * 固定の秒数で決めると、レベルが上がって 1 段が速く積もるころには低い列まで守りになった
+   */
+  guardSpare: 240,
+  /** 残り時間が「崩す一番早い手にかかる時間」にこれを足したものを切ったら急ぎの守りにする（フレーム） */
+  urgentSpare: 60,
+  /** 崩す手が見つからない列は、揃える形を作るのにこれだけ手がかかると見積もる */
+  unknownMoves: 3,
   /** 攻めの手本を選ぶとき、2 手目から 1 手ごとに値打ちから引くぶん。仕込みより、すぐ揃う手を先に出す */
   moveCost: 2,
 };
 /** 手本がまだ使えるかを確かめる間隔（フレーム） */
 const RETHINK_FRAMES = 6;
+/** 守っている列よりこれだけ早く滅亡しそうな列が出たら、そちらへ乗り換える（フレーム） */
+const SWITCH_FRAMES = 60;
 
 /** 手本の段階。攻め（得点を稼ぐ）・守り・急ぎの守り */
 export type HintTier = 'attack' | 'guard' | 'urgent';
-/** 手の狙い。CPU の思考が出す狙いに、守りでだけ使う「一番上を上へ払う」を足したもの */
+/** 手の狙い。CPU の思考が出す狙いに、急ぎの守りでだけ使う「一番上を上へ払う」を足したもの */
 export type HintMove = HintAim | { kind: 'shoot' };
 
 /** 手本の矢印。col 列の from（運ぶ隕石の今の row）から to（運び先の row）へ。row は世界座標 */
@@ -78,6 +85,14 @@ interface Held {
   shoot: number | null;
 }
 
+/** 列の危なさ。left は滅亡までの見積もり、need はその列を崩す一番早い手にかかる時間（どちらもフレーム） */
+interface Pressure {
+  col: number;
+  tier: HintTier;
+  left: number;
+  need: number;
+}
+
 /**
  * 列 c が滅亡するまでの見積もり（フレーム）。
  * 滅亡まで数え始めていればその残り。まだなら、あと何個で大気圏に届くかに 1 個あたりの降る間隔を掛け、猶予を足す。
@@ -91,23 +106,44 @@ export function columnLeft(game: Game, c: number): number {
   return rows * game.columnFillFrames * HINT_TUNING.fillCaution + game.breakFrames;
 }
 
-/** 列 c の段階。余裕は、残り時間から人が 1 手で崩すのにかかる時間を引いたもの */
-export function columnTier(game: Game, c: number): HintTier {
-  if (game.breakTimers[c] !== null) return 'urgent';
-  const margin = columnLeft(game, c) - HINT_TUNING.reactFrames - HINT_TUNING.moveFrames;
-  if (margin < HINT_TUNING.urgentFrames) return 'urgent';
-  if (margin < HINT_TUNING.guardFrames) return 'guard';
-  return 'attack';
+/** 手を打ち切るまでに人がかかる時間（フレーム） */
+function handFrames(moves: number): number {
+  return HINT_TUNING.reactFrames + moves * HINT_TUNING.moveFrames;
 }
 
-/** いちばん危ない列。守りの要る列が無ければ null */
-function pressing(game: Game): { col: number; tier: HintTier; left: number } | null {
-  let worst: { col: number; tier: HintTier; left: number } | null = null;
+/**
+ * 列ごとの危なさ。段数ではなく時間で見る。
+ * 残り時間が、その列を崩す一番早い手にかかる時間に少し足したものを切ったら守り、ほとんど足りなければ急ぎ
+ */
+function assess(game: Game, plans: Plan[]): Pressure[] {
+  const fastest = new Map<number, number>();
+  for (const plan of plans) {
+    for (const [c, lifted] of plan.lifted) {
+      if (lifted === 0) continue;
+      fastest.set(c, Math.min(fastest.get(c) ?? Infinity, plan.moves.length));
+    }
+  }
+  const result: Pressure[] = [];
   for (let c = 0; c < game.cols; c++) {
-    const tier = columnTier(game, c);
-    if (tier === 'attack') continue;
     const left = columnLeft(game, c);
-    if (worst === null || left < worst.left) worst = { col: c, tier, left };
+    const need = handFrames(fastest.get(c) ?? HINT_TUNING.unknownMoves);
+    const tier: HintTier =
+      game.breakTimers[c] !== null || left < need + HINT_TUNING.urgentSpare
+        ? 'urgent'
+        : left < need + HINT_TUNING.guardSpare
+          ? 'guard'
+          : 'attack';
+    result.push({ col: c, tier, left, need });
+  }
+  return result;
+}
+
+/** いちばん早く滅亡しそうな、守りの要る列。無ければ null */
+function pressing(pressures: Pressure[]): Pressure | null {
+  let worst: Pressure | null = null;
+  for (const p of pressures) {
+    if (p.tier === 'attack') continue;
+    if (worst === null || p.left < worst.left) worst = p;
   }
   return worst;
 }
@@ -116,6 +152,8 @@ export class Hinter {
   private held: Held | null = null;
   private wait = 0;
   private game: Game | null = null;
+  /** 最後に考えたときの列ごとの危なさ。矢印の色を毎フレーム決めるのに使う */
+  private pressures: Pressure[] = [];
 
   /** 1 tick ごとに呼ぶ。指で動かしているあいだは手本を替えない */
   update(game: Game): void {
@@ -124,24 +162,27 @@ export class Hinter {
       this.game = game;
       this.held = null;
       this.wait = 0;
+      this.pressures = [];
     }
     if (game.drag) return;
     if (--this.wait > 0) return;
     this.wait = RETHINK_FRAMES;
 
+    const plans = groundPlans(game, true);
+    this.pressures = assess(game, plans);
     const held = this.held;
     const valid = held !== null && current(game, held) !== null;
-    const danger = pressing(game);
+    const danger = pressing(this.pressures);
     // 守りの要る列が出てきたら、揃う途中の攻めの手本でも替える。
-    // 守っている列より急ぐ列が出てきたときも替える
+    // 守っている列より早く滅亡しそうな列が出てきたときも、赤くなるのを待たずに乗り換える
     const outranked =
       danger !== null &&
       held !== null &&
       (held.guard === null ||
-        (held.guard !== danger.col && danger.tier === 'urgent' && columnTier(game, held.guard) !== 'urgent'));
+        (held.guard !== danger.col && danger.left < this.pressures[held.guard].left - SWITCH_FRAMES));
     if (valid && !outranked) return;
 
-    const next = think(game, danger);
+    const next = think(game, plans, danger);
     // 守りの手が見つからず攻めに戻るだけなら、使える攻めの手本はそのまま出し続ける
     if (valid && held.guard === null && next?.guard === null) return;
     this.held = next;
@@ -154,19 +195,22 @@ export class Hinter {
     const step = current(game, h);
     if (!step) return null;
     const guard = h.guard;
+    if (guard === null) return { ...step, aim: h.aim, tier: 'attack', seconds: null };
+    const left = columnLeft(game, guard);
+    const need = this.pressures[guard]?.need ?? handFrames(1);
     return {
       ...step,
       aim: h.aim,
-      tier: guard === null ? 'attack' : columnTier(game, guard) === 'urgent' ? 'urgent' : 'guard',
-      seconds: guard === null ? null : Math.max(1, Math.ceil(columnLeft(game, guard) / 60)),
+      tier: game.breakTimers[guard] !== null || left < need + HINT_TUNING.urgentSpare ? 'urgent' : 'guard',
+      seconds: Math.max(1, Math.ceil(left / 60)),
     };
   }
 }
 
-/** 手本を選ぶ。守りの要る列があれば、先にその列を崩す手か払う手を探す */
-function think(game: Game, danger: { col: number; left: number } | null): Held | null {
+/** 手本を選ぶ。守りの要る列があれば、先にその列を崩す手を探す */
+function think(game: Game, plans: Plan[], danger: Pressure | null): Held | null {
   if (danger) {
-    const guard = guardPlan(game, danger.col, danger.left);
+    const guard = guardPlan(game, plans, danger);
     if (guard) return guard;
   }
   const lump = planLump(game);
@@ -184,7 +228,7 @@ function think(game: Game, danger: { col: number; left: number } | null): Held |
   }
   // CPU の値打ちは手数 1 つにつき 0.6 を引くだけで、速い手を前提にしている。人には手数がもっと重いので、さらに引く
   let best: { plan: Plan; score: number } | null = null;
-  for (const plan of groundPlans(game, true)) {
+  for (const plan of plans) {
     const score = plan.value - (plan.moves.length - 1) * HINT_TUNING.moveCost;
     if (best === null || score > best.score) best = { plan, score };
   }
@@ -192,20 +236,23 @@ function think(game: Game, danger: { col: number; left: number } | null): Held |
 }
 
 /**
- * col 列を崩す手本。人の手で間に合う手数の案のうち、その列から多く持ち上げるものを選ぶ。
- * 崩す手が無ければ、一番上を上へ払って時間を稼ぐ
+ * 危ない列を崩す手本。人の手で間に合う手数の案のうち、その列から多く持ち上げるものを選ぶ。
+ * 崩す手が無く、急ぎのときだけ一番上を上へ払って時間を稼ぐ。
+ * 払っても 1 個ぶんの時間しか稼げないので、まだ間に合うときは出さない
  */
-function guardPlan(game: Game, col: number, left: number): Held | null {
+function guardPlan(game: Game, plans: Plan[], danger: Pressure): Held | null {
+  const col = danger.col;
   let best: { plan: Plan; score: number } | null = null;
-  for (const plan of groundPlans(game, true)) {
+  for (const plan of plans) {
     const lifted = plan.lifted.get(col) ?? 0;
     if (lifted === 0) continue;
-    if (HINT_TUNING.reactFrames + plan.moves.length * HINT_TUNING.moveFrames > left) continue;
+    if (handFrames(plan.moves.length) > danger.left) continue;
     // 大気圏を抜けるぶんは戻ってこないので重く数える。手数は人には重いので、1 個多く打ち上げるより 1 手少ないほうを選ぶ
     const score = (plan.out.get(col) ?? 0) * 2 + lifted - plan.moves.length * 4 + plan.value * 0.1;
     if (best === null || score > best.score) best = { plan, score };
   }
   if (best) return fromGround(game, best.plan, col);
+  if (danger.tier !== 'urgent') return null;
   const top = game.ground[col].at(-1);
   if (!top) return null;
   return {

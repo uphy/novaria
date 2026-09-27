@@ -37,6 +37,8 @@ export interface Drag {
   index: number;
   /** マス目からのずれ（-0.5〜0.5）。描画だけに効く */
   offset: number;
+  /** シュートのために上へ押し込んだ量（マス） */
+  charge: number;
 }
 
 /** 指で 1 マス動かした操作。動かした音を鳴らすのに使う */
@@ -46,6 +48,8 @@ export interface DragMove {
   row: number;
   /** 上へ動かしたか */
   up: boolean;
+  /** 動かした指 */
+  finger: number;
 }
 
 /** 点火が起きたことを描画側へ知らせる */
@@ -161,7 +165,17 @@ export class Game {
   /** 加速を押しているか */
   boost = false;
 
-  drag: Drag | null = null;
+  /**
+   * 指ごとの掴み。両手で別々の列を運べる（原作はタッチペン 1 本なので 1 つだけ）。
+   * 1 つの列を 2 本の指で掴むことはできない。入れ替えがぶつかって結果が決まらなくなるため
+   */
+  drags = new Map<number, Drag>();
+
+  /** 掴みのどれか 1 つ。指を区別しない CPU とテスト向け */
+  get drag(): Drag | null {
+    for (const d of this.drags.values()) return d;
+    return null;
+  }
 
   /**
    * 相手へ送るのを待っている攻撃力。通常の隕石 1 個で 3、燃えカス 1 個で 1 溜まり、
@@ -189,8 +203,6 @@ export class Game {
    * 長さは `LAUNCH_COMBO_GRACE_FRAMES`（docs/decisions.md「打ち上げても連鎖は切らない」）
    */
   private comboGrace = 0;
-  /** シュートのために上へ押し込んだ量（マス） */
-  private shootCharge = 0;
   /** 全消しの得点を、空になっているあいだ何度も入れないための印 */
   private screenCleared = false;
   private events: Events = emptyEvents();
@@ -372,7 +384,7 @@ export class Game {
       ground: this.ground,
       fallings: this.fallings,
       lumps: this.lumps,
-      drag: this.drag,
+      drags: this.drags,
       breakTimers: this.breakTimers,
       warnings: this.warnings,
       launched: this.launched,
@@ -388,12 +400,14 @@ export class Game {
 
   /**
    * 指が触れたマスの隕石を掴む。掴めなければ false。
-   * row は世界座標（下が 0）。
+   * row は世界座標（下が 0）。`finger` は指の番号で、同じ指がすでに掴んでいれば持ち替える。
+   * 別の指が掴んでいる列は掴めない
    */
-  grab(col: number, row: number): boolean {
+  grab(col: number, row: number, finger = 0): boolean {
     if (this.over) return false;
-    this.shootCharge = 0;
+    this.drags.delete(finger);
     if (col < 0 || col >= this.cols) return false;
+    for (const d of this.drags.values()) if (d.col === col) return false;
     const r = Math.floor(row);
     // 空中のカタマリを優先する（手前に見えているものを掴める）
     for (const lump of this.lumps) {
@@ -405,24 +419,24 @@ export class Game {
       const rel = Math.floor(row - lump.y);
       const i = list.findIndex((c) => c.rel === rel);
       if (i >= 0) {
-        this.drag = { kind: 'lump', lumpId: lump.id, col, index: i, offset: 0 };
+        this.drags.set(finger, { kind: 'lump', lumpId: lump.id, col, index: i, offset: 0, charge: 0 });
         return true;
       }
     }
     if (r >= 0 && r < this.ground[col].length) {
-      this.drag = { kind: 'ground', lumpId: 0, col, index: r, offset: 0 };
+      this.drags.set(finger, { kind: 'ground', lumpId: 0, col, index: r, offset: 0, charge: 0 });
       return true;
     }
     return false;
   }
 
   /** 指の移動量（マス単位、上が正）を渡す。掴んだ隕石が列の中を上下する */
-  dragBy(deltaRows: number): void {
-    const d = this.drag;
+  dragBy(deltaRows: number, finger = 0): void {
+    const d = this.drags.get(finger);
     if (!d || this.over) return;
     const list = this.dragList(d);
     if (!list) {
-      this.drag = null;
+      this.drags.delete(finger);
       return;
     }
     d.offset += deltaRows;
@@ -431,31 +445,37 @@ export class Game {
       this.swapInList(d, list, d.index, d.index + 1);
       d.index++;
       d.offset -= 1;
-      this.events.moves.push({ kind: d.kind, row: d.index, up: true });
-      if (this.lockIfMatched(d, from)) return;
+      this.events.moves.push({ kind: d.kind, row: d.index, up: true, finger });
+      if (this.lockIfMatched(finger, d, from)) return;
     }
     while (d.offset <= -0.5 && d.index - 1 >= 0) {
       const from = d.index;
       this.swapInList(d, list, d.index, d.index - 1);
       d.index--;
       d.offset += 1;
-      this.events.moves.push({ kind: d.kind, row: d.index, up: false });
-      if (this.lockIfMatched(d, from)) return;
+      this.events.moves.push({ kind: d.kind, row: d.index, up: false, finger });
+      if (this.lockIfMatched(finger, d, from)) return;
     }
     // 列の一番上をさらに上へ払うとシュート（原作どおり）
     if (d.index === list.length - 1) {
       if (d.offset > 0.5) {
-        this.shootCharge += d.offset - 0.5;
+        d.charge += d.offset - 0.5;
         d.offset = 0.5;
-        if (d.kind === 'ground' && this.shootCharge >= SHOOT_CHARGE_ROWS) this.shoot(d.col);
+        if (d.kind === 'ground' && d.charge >= SHOOT_CHARGE_ROWS) this.shoot(finger, d.col);
       }
     }
     if (d.index === 0) d.offset = Math.max(d.offset, -0.5);
   }
 
-  release(): void {
-    this.drag = null;
-    this.shootCharge = 0;
+  /** 指を離す。`finger` を省くとすべての指を離す */
+  release(finger?: number): void {
+    if (finger === undefined) this.drags.clear();
+    else this.drags.delete(finger);
+  }
+
+  /** 条件に当たる掴みを外す。盤面が変わって、掴んでいた添字が別の隕石を指しうるときに使う */
+  private dropDrags(hit: (d: Drag, finger: number) => boolean): void {
+    for (const [finger, d] of [...this.drags]) if (hit(d, finger)) this.drags.delete(finger);
   }
 
   /** 掴んでいる列の index 番の隕石 */
@@ -473,7 +493,7 @@ export class Game {
    * （`from` は入れ替え前に掴んでいた隕石がいた添字。いまは相手がそこにいる）。
    * 置いたあとは普通の点火の流れに乗り、猶予フレームを経て点火する
    */
-  private lockIfMatched(d: Drag, from: number): boolean {
+  private lockIfMatched(finger: number, d: Drag, from: number): boolean {
     const ids = new Set<number>();
     for (const m of [this.meteorAt(d, d.index), this.meteorAt(d, from)]) {
       if (m) ids.add(m.id);
@@ -489,8 +509,7 @@ export class Game {
     for (const key of runs.cells) {
       const meteor = grid.get(key)?.meteor;
       if (meteor && ids.has(meteor.id)) {
-        this.drag = null;
-        this.shootCharge = 0;
+        this.drags.delete(finger);
         this.events.locked = true;
         return true;
       }
@@ -502,7 +521,7 @@ export class Game {
    * 列の一番上の隕石を上へ弾く。それだけでは点火しない。
    * 上昇中のカタマリに当たれば合体して押し上げ、降ってくる同じ柄に当たれば相殺する。
    */
-  private shoot(col: number): void {
+  private shoot(finger: number, col: number): void {
     const stack = this.ground[col];
     const meteor = stack.pop();
     if (!meteor) return;
@@ -514,8 +533,7 @@ export class Game {
       shot: true,
     });
     this.events.shot++;
-    this.drag = null;
-    this.shootCharge = 0;
+    this.drags.delete(finger);
     this.breakTimers[col] = null;
   }
 
@@ -625,7 +643,7 @@ export class Game {
     this.ground[col].push(this.makeMeteor(kind));
     this.breakTimers[col] = null;
     this.events.rareMetal = col;
-    this.drag = null;
+    this.dropDrags((d) => d.col === col);
   }
 
   private updateFallings(): void {
@@ -755,12 +773,13 @@ export class Game {
     // 掴んでいる隕石が消えたときだけ指から離す。
     // 同じカタマリの別の隕石が抜けるたびに離していたころは、上がりきる手前で
     // 毎フレーム指が外れ、空中のカタマリをほとんど動かせなかった
-    const held = this.drag?.kind === 'lump' ? this.dragPosition()?.meteor : null;
+    const held = this.heldMeteors();
     const remain: LumpCell[] = [];
     for (const cell of lump.cells) {
       if (lump.y + cell.rel >= SCREEN_OUT_ROW) {
         this.countLaunch(cell.meteor);
-        if (cell.meteor === held) this.drag = null;
+        const finger = held.get(cell.meteor);
+        if (finger !== undefined) this.drags.delete(finger);
         this.events.screenOut.push(cell.col);
         if (isRareMetal(cell.meteor.kind)) this.events.screenOutRare++;
       } else {
@@ -881,7 +900,7 @@ export class Game {
       a.thrustAccel = Math.max(a.thrustAccel, b.thrustAccel);
     }
     this.normalize(a);
-    if (this.drag && this.drag.kind === 'lump' && this.drag.lumpId === b.id) this.drag = null;
+    this.dropDrags((d) => d.kind === 'lump' && d.lumpId === b.id);
   }
 
   /** 列ごとに rel を詰め直し、最下段を 0 に揃える */
@@ -921,8 +940,8 @@ export class Game {
       if (lump.cells.length > 0) {
         this.normalize(lump);
         remain.push(lump);
-      } else if (this.drag && this.drag.kind === 'lump' && this.drag.lumpId === lump.id) {
-        this.drag = null;
+      } else {
+        this.dropDrags((d) => d.kind === 'lump' && d.lumpId === lump.id);
       }
     }
     this.lumps = remain;
@@ -1030,6 +1049,16 @@ export class Game {
       rest.delete(cell.lump!);
     }
 
+    // 持ち上げる隕石を掴んでいた指と、巻き込むカタマリを掴んでいた指を離す。
+    // 地面の列は点火位置から上をまとめて取るので、持ち上げない隕石の添字は変わらない。
+    // 片方の手で点火しても、関係のない列を運んでいるもう片方の手は離さない
+    const held = this.heldMeteors();
+    const dropped = new Set<number>();
+    for (const cell of taken) {
+      const finger = held.get(cell.meteor);
+      if (finger !== undefined) dropped.add(finger);
+    }
+
     // 元の場所から取り除く
     const involved = new Set<Lump>();
     for (const cell of taken) {
@@ -1072,7 +1101,8 @@ export class Game {
     this.applyThrust(lump, ignited.length, runs.vertical, bottom);
     this.lumps.push(lump);
     this.scoreIgnition(ignited, lump.combo, runs.vertical);
-    this.drag = null;
+    const involvedIds = new Set([...involved].map((l) => l.id));
+    this.dropDrags((d, finger) => dropped.has(finger) || (d.kind === 'lump' && involvedIds.has(d.lumpId)));
   }
 
   /**
@@ -1269,9 +1299,9 @@ export class Game {
     }
   }
 
-  /** 掴んでいる隕石の世界座標。描画のずらしに使う */
-  dragPosition(): { col: number; row: number; meteor: Meteor } | null {
-    const d = this.drag;
+  /** 掴んでいる隕石の世界座標。描画のずらしに使う。`finger` を省くと掴みのどれか 1 つ */
+  dragPosition(finger?: number): { col: number; row: number; meteor: Meteor } | null {
+    const d = finger === undefined ? this.drag : this.drags.get(finger);
     if (!d) return null;
     if (d.kind === 'ground') {
       const m = this.ground[d.col][d.index];
@@ -1282,6 +1312,26 @@ export class Game {
     const cells = this.columnOfLump(lump, d.col);
     const cell = cells[d.index];
     return cell ? { col: d.col, row: lump.y + cell.rel + d.offset, meteor: cell.meteor } : null;
+  }
+
+  /** 掴んでいるすべての隕石の世界座標 */
+  dragPositions(): { col: number; row: number; meteor: Meteor }[] {
+    const out: { col: number; row: number; meteor: Meteor }[] = [];
+    for (const finger of this.drags.keys()) {
+      const p = this.dragPosition(finger);
+      if (p) out.push(p);
+    }
+    return out;
+  }
+
+  /** 掴んでいる隕石から、掴んでいる指を引く */
+  private heldMeteors(): Map<Meteor, number> {
+    const out = new Map<Meteor, number>();
+    for (const finger of this.drags.keys()) {
+      const p = this.dragPosition(finger);
+      if (p) out.set(p.meteor, finger);
+    }
+    return out;
   }
 
   /** 地面に積もったいちばん高い列の段数。空中の隕石は数えない */

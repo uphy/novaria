@@ -160,3 +160,64 @@ describe('なぞっている途中の揃い', () => {
     expect(colKinds(1)).toEqual([Kind.Dust, Kind.Square, Kind.Bolt]);
   });
 });
+
+describe('両手で運ぶ', () => {
+  /** 列 0〜3 に揃いの無い詰め物を積んだ盤面 */
+  function quiet(): Game {
+    const g = stillGame([0, 1, 2, 3].map((c) => filler(4, c)));
+    g.tick();
+    return g;
+  }
+
+  it('指ごとに別の列を掴み、それぞれの指の動きがその列だけを動かす', () => {
+    const g = quiet();
+    const col0 = [...g.ground[0]];
+    const col3 = [...g.ground[3]];
+    expect(g.grab(0, 0, 1)).toBe(true);
+    expect(g.grab(3, 3, 2)).toBe(true);
+
+    g.dragBy(1, 1);
+    g.dragBy(-1, 2);
+
+    expect(g.ground[0].map((m) => m.id)).toEqual([col0[1], col0[0], col0[2], col0[3]].map((m) => m.id));
+    expect(g.ground[3].map((m) => m.id)).toEqual([col3[0], col3[1], col3[3], col3[2]].map((m) => m.id));
+  });
+
+  it('別の指が掴んでいる列は掴めない', () => {
+    const g = quiet();
+    expect(g.grab(1, 0, 1)).toBe(true);
+    expect(g.grab(1, 2, 2)).toBe(false);
+    expect(g.drags.size).toBe(1);
+  });
+
+  it('片方の指を離しても、もう片方は掴んだまま', () => {
+    const g = quiet();
+    g.grab(0, 0, 1);
+    g.grab(3, 0, 2);
+    g.release(1);
+    expect(g.drags.has(1)).toBe(false);
+    expect(g.dragPosition(2)?.col).toBe(3);
+  });
+
+  it('片方の手で点火しても、関係のない列を運んでいる手は離さない', () => {
+    const g = stillGame([
+      [Kind.Circle, Kind.Square, Kind.Pentagon, Kind.Triangle],
+      [Kind.Circle, Kind.Triangle, Kind.Square, Kind.Pentagon],
+      [Kind.Square, Kind.Triangle, Kind.Pentagon, Kind.Circle],
+      [],
+      filler(4, 4),
+    ]);
+    g.tick();
+    expect(g.grab(4, 1, 2)).toBe(true);
+    const held = g.dragPosition(2)!.meteor;
+
+    g.grab(0, 3, 1);
+    g.dragBy(-2, 1);
+    settle(g, 10);
+
+    expect(g.score).toBeGreaterThan(0);
+    expect(g.dragPosition(2)?.meteor).toBe(held);
+    g.dragBy(1, 2);
+    expect(g.ground[4][2]).toBe(held);
+  });
+});

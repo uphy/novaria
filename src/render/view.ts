@@ -595,8 +595,7 @@ export class View {
     ctx.restore();
 
     // 掴んでいる列を光らせる。指の下に隠れた隕石でも、どの列を動かしているかが分かる
-    const drag = game.dragPosition();
-    if (drag) {
+    for (const drag of game.dragPositions()) {
       ctx.globalAlpha = 0.5;
       ctx.drawImage(this.lane(UI.accent), this.colLeft(drag.col), top, L.cell, L.fieldH);
       ctx.globalAlpha = 1;
@@ -684,8 +683,8 @@ export class View {
 
   private drawBlocks(ctx: CanvasRenderingContext2D, game: Game, fx: Effects): void {
     const L = this.layout;
-    const drag = game.dragPosition();
-    const dragMeteorId = drag?.meteor.id ?? -1;
+    const drags = game.dragPositions();
+    const held = new Set(drags.map((d) => d.meteor.id));
     const atmoTop = this.rowTop(VISIBLE_ROWS + ATMOSPHERE_ROWS - 1);
 
     ctx.save();
@@ -749,11 +748,11 @@ export class View {
     }
 
     for (const cell of game.allCells()) {
-      if (cell.meteor.id === dragMeteorId) continue;
+      if (held.has(cell.meteor.id)) continue;
       this.drawOne(ctx, fx, cell.col, cell.row, cell.meteor, game);
     }
 
-    if (drag) {
+    for (const drag of drags) {
       // 掴んでいる隕石は少し大きくして浮かせる。
       // 影は shadowBlur ではなく、下に敷く黒い角丸で出す（なぞっているあいだ毎フレーム走るため）
       const x = this.colLeft(drag.col);

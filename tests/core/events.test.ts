@@ -40,8 +40,8 @@ describe('tick と tick のあいだの操作が次の tick で届く', () => {
     g.dragBy(-1);
     const ev = g.tick();
     expect(ev.moves).toEqual([
-      { kind: 'ground', row: 2, up: true },
-      { kind: 'ground', row: 1, up: false },
+      { kind: 'ground', row: 2, up: true, finger: 0 },
+      { kind: 'ground', row: 1, up: false, finger: 0 },
     ]);
   });
 

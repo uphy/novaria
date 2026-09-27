@@ -44,16 +44,24 @@ test('ヒントをつけたゲームは、消しても記録に残さない', as
   expect(await page.evaluate(() => localStorage.getItem('novaria.records.v1'))).toBeNull();
 });
 
-test('ヒントは次のゲームにも持ち越し、そのゲームも記録に残さない', async ({ page }) => {
+test('ヒントは次のゲームに持ち越さない。つけ直さなければ記録に残る', async ({ page }) => {
   await startGame(page);
   await turnHintOn(page);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: '最初から' }).click();
   await page.waitForFunction(() => window.__novaria.running);
+  expect(await page.evaluate(() => window.__novaria.hint)).toBeNull();
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: 'ヒント なし' })).toBeVisible();
+  await expect(page.locator('#hint-note')).toBeHidden();
+  await page.getByRole('button', { name: '続ける' }).click();
+  await page.waitForFunction(() => window.__novaria.running);
 
   await annihilate(page);
-  await expect(page.locator('#overlay')).toContainText('このゲームは記録にもランキングにも残さない');
-  expect(await page.evaluate(() => localStorage.getItem('novaria.records.v1'))).toBeNull();
+  await expect(page.locator('#overlay h1')).toHaveText('滅亡');
+  await expect(page.locator('#overlay')).not.toContainText('このゲームは記録にもランキングにも残さない');
+  expect(await page.evaluate(() => localStorage.getItem('novaria.records.v1'))).not.toBeNull();
 });
 
 test('CPU 戦の一時停止にはヒントの切り替えが無い', async ({ page }) => {

@@ -225,6 +225,14 @@ export class Game {
     return this.boost ? base / this.planet.boostRate : base;
   }
 
+  /**
+   * 1 つの列に隕石が 1 個降るまでの平均のフレーム数（加速していないとき）。
+   * 降る列は一様に選ぶので、降る間隔に列の数を掛けたものになる。ヒントが列の残り時間を見積もるのに使う
+   */
+  get columnFillFrames(): number {
+    return lerpLevel(this.planet.spawnStart, this.planet.spawnMax, this.level) * this.cols;
+  }
+
   /** 燃えカスが還元されるまでのフレーム数。描画が「点火してから何フレーム経ったか」を出すのにも使う */
   get revertDustFrames(): number {
     return Math.round(lerpLevel(this.planet.revertDustStart, this.planet.revertDustMax, this.level));

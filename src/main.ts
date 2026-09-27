@@ -44,7 +44,6 @@ import { openMatchSocket } from './online/socket';
 import { backdropHtml, skyHtml } from './render/sky';
 import { NEWS, isUnread, markNewsRead, unreadNews } from './render/news';
 import { setUpUpdates, takeUpdatedMark, updateCheckCount } from './render/update';
-import { loadHintOn, saveHintOn } from './render/practice';
 import { View } from './render/view';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -102,12 +101,13 @@ let margin: { mine: number; mineDanger: boolean; rival: number; rivalDanger: boo
 /** 前のフレームに危ない列があったか。警告が出た瞬間だけ揺らすのに使う */
 let wasDanger = false;
 let boostHeld = false;
-/** 練習のヒントを出すか。一時停止の画面で切り替え、次のゲームにも持ち越す */
-let hintOn = loadHintOn();
 /**
- * いまのゲームで 1 度でもヒントをつけたか。つけたゲームは途中で消しても記録にもランキングにも残さない。
- * 惑星めぐりは惑星を渡っても同じゲームなので、始めたときにだけ決め直す
+ * 練習のヒントを出すか。一時停止の画面で切り替える。
+ * 次のゲームには持ち越さず、始めるたびに消す（つけたまま忘れて、記録に残らないゲームを続けないように）。
+ * 惑星めぐりは惑星を渡っても同じゲームなので、渡るときには消さない
  */
+let hintOn = false;
+/** いまのゲームで 1 度でもヒントをつけたか。つけたゲームは途中で消しても記録にもランキングにも残さない */
 let hintUsed = false;
 const hinter = new Hinter();
 
@@ -586,7 +586,7 @@ function howHtml(): string {
         <li><b>下の帯を押す</b> … 時間が速く進む。降りが速くなる</li>
         <li><b>橙に光った列</b> … あと 1 段で大気圏。崩すか、一番上を上へ払って逃がす</li>
         <li><b>赤く光った列</b> … 大気圏まで積もった。線の上の帯が尽きると滅亡</li>
-        <li><b>ヒント</b> … 一時停止でつけると、次に動かすとよい隕石と運び先を矢印で出す。つけたゲームは記録に残らない</li>
+        <li><b>ヒント</b> … 一時停止でつけると、次に動かすとよい隕石と運び先を矢印で出す。緑は攻め、橙と赤は危ない列を守る手。ゲームごとにつけ直す。つけたゲームは記録に残らない</li>
       </ul>
       </div>
       <button id="menu-back">戻る</button>
@@ -822,7 +822,7 @@ function privacyHtml(): string {
       <h1>扱う情報</h1>
       <div class="panel-body">
         <h2 class="section">この端末にだけ残すもの</h2>
-        <p class="sub">遊び手の id（初めて開いたときに作る無作為の番号）、名前、自己ベスト、惑星めぐりの到達、対戦の戦績（相手の名前ごとの勝ち負け）、お知らせをどこまで読んだかの印、音とヒントの切り替え。ブラウザのサイトデータを消すと消える。</p>
+        <p class="sub">遊び手の id（初めて開いたときに作る無作為の番号）、名前、自己ベスト、惑星めぐりの到達、対戦の戦績（相手の名前ごとの勝ち負け）、お知らせをどこまで読んだかの印、音の切り替え。ブラウザのサイトデータを消すと消える。</p>
         <h2 class="section">ランキングに送るもの</h2>
         <p class="sub">名前を決めた人の 1 人用の結果だけ。id・名前・スコア・打ち上げ数・最大連続点火・時間・送った時刻を残す。表に出るのは上位 50 人の名前とスコアで、id は誰にも見せない。</p>
         <p class="sub">送りすぎを止めるため、接続元の IP アドレスを日付と混ぜて元に戻せない形（ハッシュ）にしたものも残す。IP アドレスそのものは残さない。</p>
@@ -1298,7 +1298,8 @@ function startGame(level: CpuLevel | null): void {
   lastOnlineCode = undefined;
   tour = null;
   versus = level ? new Versus({ seed: nextSeed(), level }) : null;
-  hintUsed = hinting();
+  hintOn = false;
+  hintUsed = false;
   beginPlay(versus ? versus.player : new Game({ seed: nextSeed() }));
 }
 
@@ -1309,7 +1310,8 @@ function startTour(): void {
   lastOnlineCode = undefined;
   versus = null;
   tour = new Tour({ seed: nextSeed() });
-  hintUsed = hinting();
+  hintOn = false;
+  hintUsed = false;
   beginPlay(tour.game);
 }
 
@@ -1433,7 +1435,6 @@ function showPause(): void {
   const hint = document.getElementById('pause-hint');
   hint?.addEventListener('click', () => {
     hintOn = !hintOn;
-    saveHintOn(hintOn);
     if (hintOn) hintUsed = true;
     hint.textContent = hintLabel();
     hint.setAttribute('aria-pressed', String(hintOn));

@@ -1,7 +1,6 @@
 import { ATMOSPHERE_ROWS, SCORE, SCREEN_OUT_ROW, VISIBLE_ROWS } from '../core/constants';
 import { Game, burnHeat } from '../core/game';
-import type { HintAim } from '../core/cpu';
-import type { HintArrow } from '../core/hint';
+import type { HintArrow, HintTier } from '../core/hint';
 import { Kind, isRareMetal, type Meteor, type RivalView } from '../core/types';
 import { Effects } from './effects';
 import { glowSprite, rgba } from './glow';
@@ -10,17 +9,33 @@ import { TILE_RADIUS, bakedFlame, drawTile, makeBakeCanvas, roundRect, setTileSc
 
 /** 得点の並びの左右の余白 */
 const HUD_PAD = 14;
-/** ヒントの矢印に添える狙いの説明。狭い画面でも 1 行に収まる長さにする */
-export function hintText(aim: HintAim): string {
-  if (aim.kind === 'chain') return '空中で揃え直して連続点火';
+/**
+ * ヒントの矢印に添える札。頭に攻め・守り・急げを置き、守りなら守る列が滅亡するまでの秒数を出す。
+ * 狭い画面でも 1 行に収まる長さにする
+ */
+export function hintText(arrow: HintArrow): string {
+  const aim = arrow.aim;
+  if (arrow.tier === 'attack') {
+    if (aim.kind === 'chain') return '攻め・空中で揃え直して連続点火';
+    if (aim.kind === 'shoot') return '攻め・一番上を上へ払う';
+    const way = aim.vertical ? '縦' : '横';
+    if (aim.kind === 'setup') return `攻め・仕込み あと ${aim.left} 手で${way}に ${aim.count} つ`;
+    return `攻め・${way}に ${aim.count} つ揃えて点火`;
+  }
+  const head = `${arrow.tier === 'urgent' ? '急げ' : '守り'}・あと約 ${arrow.seconds} 秒`;
+  if (aim.kind === 'shoot') return `${head} 一番上を上へ払う`;
+  if (aim.kind === 'chain') return `${head} 空中で揃え直す`;
   const way = aim.vertical ? '縦' : '横';
-  if (aim.kind === 'setup') return `仕込み・あと ${aim.left} 手で${way}に ${aim.count} つ`;
-  if (aim.breaks) return `${way}に揃えて高い列を崩す`;
-  return `${way}に ${aim.count} つ揃えて点火`;
+  if (aim.kind === 'setup') return `${head} ${way}に揃えて崩す（${aim.left} 手）`;
+  return `${head} ${way}に揃えて崩す`;
 }
 
-/** 練習のヒントの色。盤面の差し色（水色）とも連鎖の黄色とも混ざらない緑にする */
-const HINT_COLOR = '#8dffb4';
+/**
+ * 練習のヒントの色。攻めは盤面の差し色（水色）とも連鎖の黄色とも混ざらない緑、
+ * 守りは予兆の橙、急ぎの守りは滅亡の赤。どちらも盤面の警告と同じ色なので、どの列の話かが結びつく
+ */
+const HINT_COLORS: Record<HintTier, string> = { attack: '#8dffb4', guard: UI.warn, urgent: UI.danger };
+const HINT_COLOR = HINT_COLORS.attack;
 /**
  * 盤面が下から組み上がる演出の長さ（フレーム）。ゲームを始めた直後と、惑星を渡った直後に流れる。
  * 描き方を変えるだけで、ゲームはその間も進んでいる（降ってくる隕石が大気圏に届くより短い）
@@ -750,16 +765,18 @@ export class View {
     const cx = x + L.cell / 2;
     // 運ぶ向き。rowTop は row が増えると上へ行くので、画面の y では符号が逆になる
     const dir = toY > fromY ? 1 : -1;
-    const pulse = 0.65 + 0.35 * Math.sin(frame * 0.15);
+    const color = HINT_COLORS[arrow.tier];
+    // 急ぎの守りは速く明滅させる
+    const pulse = 0.65 + 0.35 * Math.sin(frame * (arrow.tier === 'urgent' ? 0.4 : 0.15));
     const thick = Math.max(5, L.cell * 0.2);
     const thin = Math.max(2, L.cell * 0.07);
     const pass = (path: () => void, dash: number[] = []): void => {
       ctx.setLineDash(dash);
       path();
-      ctx.strokeStyle = rgba('#0a2a18', 0.55 * pulse);
+      ctx.strokeStyle = rgba('#05050c', 0.6 * pulse);
       ctx.lineWidth = thick;
       ctx.stroke();
-      ctx.strokeStyle = rgba(HINT_COLOR, pulse);
+      ctx.strokeStyle = rgba(color, pulse);
       ctx.lineWidth = thin;
       ctx.stroke();
     };
@@ -781,7 +798,7 @@ export class View {
     const y0 = fromY + L.cell / 2;
     const y1 = toY + L.cell / 2;
     const head = L.cell * 0.24;
-    ctx.fillStyle = rgba(HINT_COLOR, 0.9 * pulse);
+    ctx.fillStyle = rgba(color, 0.9 * pulse);
     ctx.beginPath();
     ctx.arc(cx, y0, L.cell * 0.1, 0, Math.PI * 2);
     ctx.fill();
@@ -794,7 +811,7 @@ export class View {
       ctx.lineTo(cx + head, y1 - dir * head);
     });
     ctx.setLineDash([]);
-    this.drawHintLabel(ctx, hintText(arrow.aim), arrow, game);
+    this.drawHintLabel(ctx, hintText(arrow), arrow, game, color);
     ctx.restore();
   }
 
@@ -802,7 +819,13 @@ export class View {
    * 矢印に添える狙いの札。盤面の外にはみ出さないよう、列が右寄りなら左に、左寄りなら右に出す。
    * 隣の列には揃える相手が並んでいることが多いので、札がかかる列の山より上に出して隠さない
    */
-  private drawHintLabel(ctx: CanvasRenderingContext2D, text: string, arrow: HintArrow, game: Game): void {
+  private drawHintLabel(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    arrow: HintArrow,
+    game: Game,
+    color: string,
+  ): void {
     const col = arrow.col;
     const L = this.layout;
     const size = Math.max(11, Math.round(L.cell * 0.28));
@@ -820,13 +843,13 @@ export class View {
       peak = Math.max(peak, (game.ground[c]?.length ?? 0) - 1);
     }
     const y = Math.round(this.rowTop(peak) - h - 4);
-    ctx.fillStyle = 'rgba(4,16,10,0.86)';
+    ctx.fillStyle = 'rgba(6,6,14,0.88)';
     roundRect(ctx, x, y, w, h, h / 2);
     ctx.fill();
-    ctx.strokeStyle = rgba(HINT_COLOR, 0.8);
+    ctx.strokeStyle = rgba(color, 0.8);
     ctx.lineWidth = Math.max(1.5, L.cell * 0.04);
     ctx.stroke();
-    ctx.fillStyle = HINT_COLOR;
+    ctx.fillStyle = color;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, x + padX, y + h / 2 + 1);

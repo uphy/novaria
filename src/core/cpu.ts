@@ -8,7 +8,7 @@ import { ATTACK, MAX_IGNITION_RUN, MIN_IGNITION_RUN, PHYSICS, SCREEN_OUT_ROW } f
 import { Kind } from './types';
 
 /** 1 手 = ある列の隕石を、その列の中の別の位置へ運ぶ */
-interface Move {
+export interface Move {
   col: number;
   from: number;
   to: number;
@@ -110,12 +110,19 @@ function planHigh(game: Game): Move[] | null {
   return best?.moves ?? null;
 }
 
-/** 地面で点火させる 1 つの案。運ぶ手と、その値打ち */
-interface Candidate {
+/** 地面で点火させる 1 つの案。運ぶ手と、揃ったときの形と、その値打ち */
+export interface Plan {
+  /** この順に運ぶ。添字は、それより前の手を打ったあとの列で数える */
   moves: Move[];
   value: number;
   /** 何を狙った手か。ヒントに添える説明に使う */
   aim: HintAim;
+  /** 運び終えたとき、matchKind が並ぶマス（列と、列の中の添字） */
+  pattern: { col: number; index: number }[];
+  matchKind: Kind;
+  /** 点火したら列ごとに何個が持ち上がり、そのうち何個が大気圏を抜けるか */
+  lifted: Map<number, number>;
+  out: Map<number, number>;
 }
 
 /**
@@ -171,7 +178,7 @@ function peril(height: number, counting: boolean): number {
  * 相手へ送れる量と、高い列がどれだけ低くなるかで値打ちを付ける。
  * `planHigh` だけでは 1 列だけが高く積もると崩す手が無く、ほぼ毎回その 1 列で滅亡していた
  */
-function planGuarded(game: Game): Candidate | null {
+export function groundPlans(game: Game, wide = false): Plan[] {
   const cols = game.cols;
   const ground = game.ground;
   const height = (c: number) => ground[c].length;
@@ -192,7 +199,7 @@ function planGuarded(game: Game): Candidate | null {
     ignited: number,
     vertical: boolean,
     moves: number,
-  ): { value: number; relief: number } => {
+  ): { value: number; relief: number; lifted: Map<number, number>; out: Map<number, number> } => {
     let mass = 0;
     let base = Infinity;
     for (const [c, pivot] of pivots) {
@@ -207,8 +214,11 @@ function planGuarded(game: Game): Candidate | null {
     let units = 0;
     let lifted = 0;
     let after = before;
+    const liftedBy = new Map<number, number>();
+    const outBy = new Map<number, number>();
     for (const [c, pivot] of pivots) {
       let out = 0;
+      liftedBy.set(c, height(c) - pivot);
       for (let r = pivot; r < height(c); r++) {
         lifted++;
         if (r + rise < SCREEN_OUT_ROW) continue;
@@ -217,24 +227,33 @@ function planGuarded(game: Game): Candidate | null {
         const burnt = r < pivot + (vertical ? ignited : 1);
         units += burnt || ground[c][r].kind === Kind.Dust ? ATTACK.unitDust : ATTACK.unitNormal;
       }
+      outBy.set(c, out);
       after += peril(height(c) - out, false) - peril(height(c), counting(c));
     }
     return {
       value: units / ATTACK.unitsPerMeteor + (before - after) * 0.5 + lifted * 0.05 - moves * 0.6,
       relief: before - after,
+      lifted: liftedBy,
+      out: outBy,
     };
   };
 
-  let best: Candidate | null = null;
-  const offer = (moves: Move[], pivots: Map<number, number>, ignited: number, vertical: boolean) => {
+  const plans: Plan[] = [];
+  const offer = (
+    moves: Move[],
+    pivots: Map<number, number>,
+    ignited: number,
+    vertical: boolean,
+    pattern: { col: number; index: number }[],
+    matchKind: Kind,
+  ) => {
     if (moves.length === 0) return;
-    const { value, relief } = judge(pivots, ignited, vertical, moves.length);
-    if (best !== null && value <= best.value) return;
+    const { value, relief, lifted, out } = judge(pivots, ignited, vertical, moves.length);
     const aim: HintAim =
       moves.length === 1
         ? { kind: 'ignite', vertical, count: ignited, breaks: relief > 0 }
         : { kind: 'setup', vertical, count: ignited, left: moves.length };
-    best = { moves, value, aim };
+    plans.push({ moves, value, aim, pattern, matchKind, lifted, out });
   };
 
   // 横そろえ: 隣り合う 3 列の同じ row に同じ柄を集める
@@ -271,7 +290,8 @@ function planGuarded(game: Game): Candidate | null {
         const pivots = new Map(trio.map((col) => [col, r]));
         for (let x = c - 1; x >= 0 && pivots.size < MAX_IGNITION_RUN && kindAt(x, r) === kind; x--) pivots.set(x, r);
         for (let x = c + 3; x < cols && pivots.size < MAX_IGNITION_RUN && kindAt(x, r) === kind; x++) pivots.set(x, r);
-        offer(moves, pivots, pivots.size, false);
+        const pattern = [...pivots].map(([col, index]) => ({ col, index }));
+        offer(moves, pivots, pivots.size, false, pattern, kind);
       }
     }
   }
@@ -285,18 +305,53 @@ function planGuarded(game: Game): Candidate | null {
       if (!byKind.has(k)) byKind.set(k, []);
       byKind.get(k)!.push(i);
     }
-    for (const rows of byKind.values()) {
+    for (const [kind, rows] of byKind) {
       for (let j = 0; j + 2 < rows.length; j++) {
         const [a, b, top] = [rows[j], rows[j + 1], rows[j + 2]];
-        // 真ん中を top の 1 つ下へ、下を 2 つ下へ。先に上側を動かせば、残りの添字はずれない
-        const moves: Move[] = [];
-        if (b !== top - 1) moves.push({ col: c, from: b, to: top - 1 });
-        if (a !== top - 2) moves.push({ col: c, from: a, to: top - 2 });
-        offer(moves, new Map([[c, top - 2]]), MIN_IGNITION_RUN, true);
+        // CPU は、いちばん上のものの下へ 2 つを寄せる形だけを考える（強さはこの形で合わせてある）。
+        // ヒントでは、下のものの上へ寄せる形と、真ん中のものを挟む形も比べる
+        const starts = wide ? new Set([top - 2, a, b - 1]) : [top - 2];
+        for (const start of starts) {
+          const moves = packMoves(c, [a, b, top], start);
+          if (!moves) continue;
+          const pattern = [0, 1, 2].map((i) => ({ col: c, index: start + i }));
+          offer(moves, new Map([[c, start]]), MIN_IGNITION_RUN, true, pattern, kind);
+        }
       }
     }
   }
-  return best as Candidate | null;
+  return plans;
+}
+
+/**
+ * 1 列の中の 3 つ（下から rows）を、start から縦に 3 つ並ぶよう運ぶ手順。
+ * 指で運ぶと、あいだの隕石が 1 つずつずれる。その添字のずれを写しの上で追う
+ */
+function packMoves(col: number, rows: number[], start: number): Move[] | null {
+  if (start < 0) return null;
+  for (const order of [
+    [2, 1, 0],
+    [0, 1, 2],
+  ]) {
+    const arr = Array.from({ length: Math.max(...rows, start + 2) + 1 }, (_, i) => i);
+    const moves: Move[] = [];
+    for (const k of order) {
+      const from = arr.indexOf(rows[k]);
+      const to = start + k;
+      if (from === to) continue;
+      moves.push({ col, from, to });
+      arr.splice(to, 0, ...arr.splice(from, 1));
+    }
+    if ([0, 1, 2].every((k) => arr[start + k] === rows[k])) return moves;
+  }
+  return null;
+}
+
+/** 値打ちがいちばん高い案。並びが同じなら先に見つけたもの */
+function planGuarded(game: Game): Plan | null {
+  let best: Plan | null = null;
+  for (const plan of groundPlans(game)) if (best === null || plan.value > best.value) best = plan;
+  return best;
 }
 
 /** 空中のカタマリの 1 列の中で、from 番と to 番（下から数えた添字）の隕石を入れ替える手 */
@@ -312,7 +367,15 @@ interface LumpSwap {
  * 原作ではここが一番の稼ぎどころで、点火を重ねるほど高く飛ぶ。
  * 返すのは列ごとの入れ替え。列はどれも別なので、どの順に入れ替えても同じになる
  */
-function planLump(game: Game): LumpSwap[] | null {
+export interface LumpPlan {
+  lumpId: number;
+  swaps: LumpSwap[];
+  /** 揃え終えたとき、matchKind が並ぶマス（列と、カタマリのその列の中の添字） */
+  pattern: { col: number; index: number }[];
+  matchKind: Kind;
+}
+
+export function planLump(game: Game): LumpPlan | null {
   for (const lump of game.lumps) {
     const byCol = new Map<number, number[]>();
     for (const cell of lump.cells) {
@@ -330,6 +393,7 @@ function planLump(game: Game): LumpSwap[] | null {
         for (const list of lists) for (const cell of list) if (cell.meteor.kind !== Kind.Dust) kinds.add(cell.meteor.kind);
         for (const kind of kinds) {
           const swaps: LumpSwap[] = [];
+          const pattern: { col: number; index: number }[] = [];
           let ok = true;
           for (const list of lists) {
             const to = list.findIndex((c) => c.rel === rel);
@@ -337,6 +401,7 @@ function planLump(game: Game): LumpSwap[] | null {
               ok = false;
               break;
             }
+            pattern.push({ col: list[0].col, index: to });
             if (list[to].meteor.kind === kind) continue;
             const from = list.findIndex((c) => c.meteor.kind === kind && c.rel !== rel);
             if (from < 0) {
@@ -345,7 +410,7 @@ function planLump(game: Game): LumpSwap[] | null {
             }
             swaps.push({ lumpId: lump.id, col: list[0].col, from, to });
           }
-          if (ok && swaps.length > 0) return swaps;
+          if (ok && swaps.length > 0) return { lumpId: lump.id, swaps, pattern, matchKind: kind };
         }
       }
     }
@@ -364,32 +429,6 @@ function applySwap(game: Game, swap: LumpSwap): void {
   const tmp = a.meteor;
   a.meteor = b.meteor;
   b.meteor = tmp;
-}
-
-/**
- * ヒントに出す 1 手。地面なら `ground[col]` の、空中ならカタマリ `lumpId` の col 列の、
- * from 番の隕石を to 番まで指で運ぶ（添字は下から数える）
- */
-export interface Suggestion {
-  kind: 'ground' | 'lump';
-  lumpId: number;
-  col: number;
-  from: number;
-  to: number;
-  aim: HintAim;
-}
-
-/**
- * いまの盤面で「強い」の CPU が打つ最初の 1 手。練習のヒントに出す。
- * 見るのは地面と空中のカタマリだけで、これから降ってくる隕石は見ない（人に見えないものを使わない）
- */
-export function suggest(game: Game): Suggestion | null {
-  if (game.over) return null;
-  const swap = planLump(game)?.[0];
-  if (swap) return { kind: 'lump', ...swap, aim: { kind: 'chain' } };
-  const plan = planGuarded(game);
-  const move = plan?.moves[0];
-  return plan && move ? { kind: 'ground', lumpId: 0, ...move, aim: plan.aim } : null;
 }
 
 /**
@@ -429,7 +468,7 @@ export class Cpu {
     this.cooldown = this.style.moveFrames;
 
     // 空中に塊があれば、まずその中でそろえ直す（第二次点火のほうが強い）
-    const swaps = this.style.chains ? planLump(this.game) : null;
+    const swaps = this.style.chains ? planLump(this.game)?.swaps : null;
     if (swaps) {
       for (const swap of swaps) applySwap(this.game, swap);
       return;

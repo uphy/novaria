@@ -30,6 +30,8 @@ describe('ヒント', () => {
       from: 1,
       to: 0,
       aim: { kind: 'ignite', vertical: false, count: 3, breaks: false },
+      tier: 'attack',
+      seconds: null,
     });
   });
 
@@ -42,15 +44,85 @@ describe('ヒント', () => {
   });
 
   it('高く積もった列を縦に揃えて低くする手は「崩す」として出す', () => {
-    // 11 段の列。三角のほかはどの柄も 2 つまで。下の三角（row 6）を row 8 まで上げれば、上の 2 つと縦に三角が 3 つ並ぶ
+    // 11 段の列。三角のほかはどの柄も 2 つまで。下の三角（row 7）を 1 つ上げれば、上の 2 つと縦に三角が 3 つ並ぶ
     const tall = [
       Kind.Circle, Kind.Drop, Kind.Square, Kind.Hexagon, Kind.Circle, Kind.Drop,
-      Kind.Triangle, Kind.Square, Kind.Hexagon, Kind.Triangle, Kind.Triangle,
+      Kind.Square, Kind.Triangle, Kind.Hexagon, Kind.Triangle, Kind.Triangle,
     ];
     const g = board([[], [], [], [], tall]);
     const hinter = new Hinter();
     hinter.update(g);
     expect(hinter.arrow(g)?.aim).toEqual({ kind: 'ignite', vertical: true, count: 3, breaks: true });
+  });
+
+  it('2 手の仕込みは、1 手目を打つと同じ手順の 2 手目を出す', () => {
+    const g = board([[Kind.Circle], [Kind.Drop, Kind.Circle], [Kind.Drop, Kind.Circle]]);
+    const hinter = new Hinter();
+    hinter.update(g);
+    const first = hinter.arrow(g)!;
+    g.grab(first.col, first.from);
+    g.dragBy(first.to - first.from);
+    g.release();
+    for (let i = 0; i < 12; i++) hinter.update(g);
+    const second = hinter.arrow(g)!;
+    expect(second.col).not.toBe(first.col);
+    expect([1, 2]).toContain(second.col);
+    expect(second).toMatchObject({ from: 1, to: 0 });
+  });
+
+  it('ほかの列に隕石が積もって別の手が良くなっても、揃うあいだは手本を替えない', () => {
+    const g = oneMoveAway();
+    const hinter = new Hinter();
+    hinter.update(g);
+    const before = hinter.arrow(g);
+    // 右の 3 列に、1 手で 4 つ揃う形を後から置く
+    g.ground[5] = [{ id: nextId++, kind: Kind.Square, revert: 0, fromAttack: false, ignitedAt: -1 }];
+    g.ground[6] = [{ id: nextId++, kind: Kind.Square, revert: 0, fromAttack: false, ignitedAt: -1 }];
+    g.ground[7] = [{ id: nextId++, kind: Kind.Square, revert: 0, fromAttack: false, ignitedAt: -1 }];
+    g.ground[8] = [
+      { id: nextId++, kind: Kind.Drop, revert: 0, fromAttack: false, ignitedAt: -1 },
+      { id: nextId++, kind: Kind.Square, revert: 0, fromAttack: false, ignitedAt: -1 },
+    ];
+    for (let i = 0; i < 120; i++) hinter.update(g);
+    expect(hinter.arrow(g)).toEqual(before);
+  });
+
+  it('揃える相手が動かされて揃わなくなったら、手本を替える', () => {
+    const g = oneMoveAway();
+    const hinter = new Hinter();
+    hinter.update(g);
+    // 2 列目の丸を水滴に替える。3 列目の丸を下ろしても揃わない
+    g.ground[1][0].kind = Kind.Drop;
+    expect(hinter.arrow(g)).toBeNull();
+  });
+
+  it('レベルが上がって高い列が間に合わなくなると、攻めの手本を守りに替える', () => {
+    // 左の 3 列には攻めの手。5 列目は 8 段で、下の三角を 1 つ上げれば縦に揃って崩れる。
+    // 開始直後なら 1 列に 1 個降るのは 12 秒に 1 度なので、まだ攻めでいい
+    const tall = [
+      Kind.Circle, Kind.Drop, Kind.Square, Kind.Hexagon, Kind.Triangle, Kind.Circle, Kind.Triangle, Kind.Triangle,
+    ];
+    const g = board([[Kind.Circle], [Kind.Circle], [Kind.Drop, Kind.Circle], [], tall]);
+    const hinter = new Hinter();
+    hinter.update(g);
+    expect(hinter.arrow(g)?.tier).toBe('attack');
+    // レベルを最大にすると、1 列に 1 個降る間隔が 4 分の 1 になる
+    g.frame = 60 * 60 * 30;
+    for (let i = 0; i < 12; i++) hinter.update(g);
+    const arrow = hinter.arrow(g)!;
+    expect(arrow.col).toBe(4);
+    expect(['guard', 'urgent']).toContain(arrow.tier);
+    expect(arrow.seconds).toBeGreaterThan(0);
+  });
+
+  it('滅亡まで数えている列を崩す手が無ければ、一番上を上へ払う手を出す', () => {
+    // 12 段で、どの柄も 2 つまで。揃える手が無い
+    const kinds = [Kind.Circle, Kind.Drop, Kind.Square, Kind.Hexagon, Kind.Pentagon, Kind.Triangle];
+    const g = board([[], [], [], [], [...kinds, ...kinds]]);
+    g.breakTimers[4] = 90;
+    const hinter = new Hinter();
+    hinter.update(g);
+    expect(hinter.arrow(g)).toMatchObject({ col: 4, from: 11, aim: { kind: 'shoot' }, tier: 'urgent' });
   });
 
   it('手本どおりに運ぶと、その矢印は消える', () => {

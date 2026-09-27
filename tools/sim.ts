@@ -10,9 +10,11 @@
  *   pnpm sim atk 20     CPU の強さごとに、自分の盤面へ毎分何個降るかを 20 回
  *   pnpm sim atk 16 guard   同じことを、自分側も列を見張る CPU にして測る
  *   pnpm sim tour 12    惑星めぐりの各惑星を 12 回ずつ。脱出できるかと、そこまでの長さ
+ *   pnpm sim hint 12    練習のヒントの手だけを人の速さで打たせて、守りの手本の出し方ごとに生存を比べる
  */
 import { CPU_STYLES, Cpu, CpuLevel, CpuStyle } from '../src/core/cpu';
 import { Game } from '../src/core/game';
+import { HINT_TUNING, Hinter } from '../src/core/hint';
 import { TOUR } from '../src/core/planets';
 import { Tour } from '../src/core/tour';
 import { Versus } from '../src/core/versus';
@@ -195,7 +197,76 @@ function tour(runs: number): void {
   );
 }
 
+/**
+ * 人の代わりに、ヒントの手だけを打つ。矢印が出てから react フレーム見てから運び、運んだあとは move フレーム休む。
+ * 指は 1 度で運び切る（なぞる途中で揃えばそこで止まるのは人と同じ）
+ */
+function followHints(seed: number, react: number, move: number): { seconds: number; score: number; launched: number } {
+  const game = new Game({ seed });
+  const hinter = new Hinter();
+  let seen = '';
+  let seenAt = 0;
+  let rest = 0;
+  let frames = 0;
+  while (!game.over && frames < 60 * 60 * 10) {
+    hinter.update(game);
+    const a = hinter.arrow(game);
+    const key = a ? `${a.col}:${Math.round(a.from)}:${Math.round(a.to)}` : '';
+    if (key !== seen) {
+      seen = key;
+      seenAt = frames;
+    }
+    if (rest > 0) rest--;
+    else if (a && frames - seenAt >= react) {
+      if (game.grab(a.col, a.from + 0.5)) {
+        game.dragBy(a.aim.kind === 'shoot' ? 3 : a.to - a.from);
+        game.release();
+      }
+      rest = move;
+    }
+    game.tick();
+    frames++;
+  }
+  return {
+    seconds: frames / 60,
+    score: game.score,
+    launched: game.launched.normal + game.launched.dust + game.launched.rare,
+  };
+}
+
+function hints(runs: number): void {
+  const base = { ...HINT_TUNING };
+  const variants: [string, Partial<typeof HINT_TUNING>][] = [
+    ['守りなし（攻めの手本だけ）', { guardFrames: -1e9, urgentFrames: -1e9 }],
+    ['守り 余裕 20 秒から', { guardFrames: 1200 }],
+    ['守り 余裕 6 秒から', { guardFrames: 360 }],
+    ['守り 余裕 10 秒から', { guardFrames: 600 }],
+    ['守り 余裕 15 秒から', { guardFrames: 900 }],
+    ['守り 余裕 12 秒から', { guardFrames: 720 }],
+  ];
+  for (const [react, move] of [
+    [60, 40],
+    [90, 60],
+  ]) {
+    console.log(`\n-- 人の速さ: 気づくまで ${react} フレーム・1 手 ${move} フレーム`);
+    for (const [label, tuning] of variants) {
+      Object.assign(HINT_TUNING, base, tuning);
+      const results = [];
+      for (let seed = 1; seed <= runs; seed++) results.push(followHints(seed, react, move));
+      console.log(`  ${label}`);
+      console.log(`    生存秒 ${stats(results.map((r) => r.seconds))}`);
+      console.log(`    得点   ${stats(results.map((r) => r.score))}`);
+    }
+  }
+  Object.assign(HINT_TUNING, base);
+}
+
 const runs = Number(process.argv[3] ?? process.argv[2]) || 10;
+if (process.argv[2] === 'hint') {
+  console.log(`\n== ヒントどおりに打つ人  各 ${runs} 回（10 分で打ち切り）`);
+  hints(runs);
+  process.exit(0);
+}
 if (process.argv[2] === 'tour') {
   console.log(`\n== 惑星めぐり  各 ${runs} 回`);
   tour(runs);

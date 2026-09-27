@@ -221,3 +221,104 @@ describe('両手で運ぶ', () => {
     expect(g.ground[4][2]).toBe(held);
   });
 });
+
+describe('掴んでいるカタマリの形が変わっても指から離れない', () => {
+  let nextId = 7000;
+  const m = (kind: Kind) => meteor(kind, nextId++);
+  /** 空の盤面 */
+  function empty(): Game {
+    const g = new Game({ seed: 4, rareMetal: false });
+    g.ground = g.ground.map(() => []);
+    g.fallings = [];
+    return g;
+  }
+  /** 1 フレーム進める。降り始めた隕石は消して、組んだ盤面だけを動かす */
+  function step(g: Game) {
+    const ev = g.tick();
+    g.fallings = [];
+    return ev;
+  }
+  function lump(id: number, cells: [number, number, Kind][], y: number, vy: number) {
+    return {
+      id,
+      cells: cells.map(([col, rel, kind]) => ({ col, rel, meteor: m(kind) })),
+      y,
+      vy,
+      thrustFrames: 0,
+      thrustAccel: 0,
+      combo: 1,
+    };
+  }
+
+  it('運んでいるカタマリが着地したら、地面の山で掴んだまま', () => {
+    const g = empty();
+    g.ground[0] = [m(Kind.Circle)];
+    g.lumps = [lump(900, [[0, 0, Kind.Square], [0, 1, Kind.Drop], [1, 0, Kind.Hexagon]], 3, -0.05)];
+    expect(g.grab(0, 4.5, 1)).toBe(true);
+    const held = g.dragPosition(1)!.meteor;
+    for (let i = 0; i < 200 && g.lumps.length > 0; i++) step(g);
+    expect(g.lumps.length).toBe(0);
+
+    expect(g.dragPosition(1)?.meteor).toBe(held);
+    g.dragBy(-1, 1);
+    expect(g.ground[0][1]).toBe(held);
+  });
+
+  it('一部の列だけが着地しても、着地した列の隕石を掴んだまま', () => {
+    const g = empty();
+    g.ground[0] = [m(Kind.Circle), m(Kind.Square)];
+    g.lumps = [lump(900, [[0, 0, Kind.Drop], [0, 1, Kind.Hexagon], [1, 0, Kind.Pentagon]], 3, -0.05)];
+    expect(g.grab(0, 4.5, 1)).toBe(true);
+    const held = g.dragPosition(1)!.meteor;
+    for (let i = 0; i < 200 && g.ground[0].length < 4; i++) step(g);
+    expect(g.lumps.length).toBe(1);
+
+    expect(g.dragPosition(1)?.meteor).toBe(held);
+    g.dragBy(-1, 1);
+    expect(g.ground[0][2]).toBe(held);
+  });
+
+  it('掴んでいるカタマリがドッキングしても掴んだまま', () => {
+    const g = empty();
+    g.lumps = [
+      lump(900, [[0, 0, Kind.Square], [0, 1, Kind.Drop]], 5, 0),
+      lump(901, [[0, 0, Kind.Hexagon], [0, 1, Kind.Circle], [1, 0, Kind.Pentagon]], 3, 0.3),
+    ];
+    expect(g.grab(0, 3.5, 1)).toBe(true);
+    const held = g.dragPosition(1)!.meteor;
+    let docked = 0;
+    for (let i = 0; i < 30; i++) docked += step(g).airDock;
+    expect(docked).toBe(1);
+
+    expect(g.dragPosition(1)?.meteor).toBe(held);
+  });
+
+  it('掴んでいるカタマリの別の列で点火しても、掴んだまま', () => {
+    const g = empty();
+    g.lumps = [
+      lump(
+        900,
+        [
+          [0, 0, Kind.Square],
+          [0, 1, Kind.Drop],
+          [0, 2, Kind.Hexagon],
+          [2, 0, Kind.Triangle],
+          [2, 1, Kind.Triangle],
+          [2, 2, Kind.Circle],
+          [2, 3, Kind.Triangle],
+        ],
+        6,
+        0,
+      ),
+    ];
+    expect(g.grab(0, 6.5, 1)).toBe(true);
+    const held = g.dragPosition(1)!.meteor;
+    // もう片方の手で列 2 の Circle と Triangle を入れ替えて、縦に 3 つ揃える
+    expect(g.grab(2, 8.5, 2)).toBe(true);
+    g.dragBy(1, 2);
+    for (let i = 0; i < IGNITION_GRACE_FRAMES + 1; i++) step(g);
+    expect(g.score).toBeGreaterThan(0);
+
+    expect(g.dragPosition(1)?.meteor).toBe(held);
+  });
+});

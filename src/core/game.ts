@@ -485,6 +485,32 @@ export class Game {
     for (const [finger, d] of [...this.drags]) if (hit(d, finger)) this.drags.delete(finger);
   }
 
+  /**
+   * カタマリの着地・合体・点火で盤面の形が変わったあと、掴みを隕石の今いる場所へ付け直す。
+   * 掴みは添字で覚えているので、形が変わると別の隕石を指すか、列ごと無くなる。
+   * `held` は形が変わる前の `heldMeteors()`。隕石が盤面から消えていたら離す。
+   * 付け直さずに外していたころは、運んでいるカタマリが着地した瞬間に指から離れていた
+   */
+  private rebindDrags(held: Map<Meteor, number>): void {
+    for (const [meteor, finger] of held) {
+      const d = this.drags.get(finger);
+      if (!d) continue;
+      const index = this.ground[d.col].indexOf(meteor);
+      if (index >= 0) {
+        if (d.kind !== 'ground') d.charge = 0;
+        Object.assign(d, { kind: 'ground', lumpId: 0, index });
+        continue;
+      }
+      const lump = this.lumps.find((l) => l.cells.some((c) => c.meteor === meteor));
+      if (lump) {
+        const i = this.columnOfLump(lump, d.col).findIndex((c) => c.meteor === meteor);
+        Object.assign(d, { kind: 'lump', lumpId: lump.id, index: i });
+        continue;
+      }
+      this.drags.delete(finger);
+    }
+  }
+
   /** 掴んでいる列の index 番の隕石 */
   private meteorAt(d: Drag, index: number): Meteor | null {
     if (d.kind === 'ground') return this.ground[d.col][index] ?? null;
@@ -771,8 +797,10 @@ export class Game {
       this.screenOut(lump);
     }
     this.lumps = this.lumps.filter((l) => l.cells.length > 0);
+    const held = this.heldMeteors();
     this.dock();
     this.landLumps();
+    this.rebindDrags(held);
   }
 
   /** 画面上端（大気圏）を越えた隕石から順に消える */
@@ -907,7 +935,6 @@ export class Game {
       a.thrustAccel = Math.max(a.thrustAccel, b.thrustAccel);
     }
     this.normalize(a);
-    this.dropDrags((d) => d.kind === 'lump' && d.lumpId === b.id);
   }
 
   /** 列ごとに rel を詰め直し、最下段を 0 に揃える */
@@ -947,8 +974,6 @@ export class Game {
       if (lump.cells.length > 0) {
         this.normalize(lump);
         remain.push(lump);
-      } else {
-        this.dropDrags((d) => d.kind === 'lump' && d.lumpId === lump.id);
       }
     }
     this.lumps = remain;
@@ -1056,8 +1081,8 @@ export class Game {
       rest.delete(cell.lump!);
     }
 
-    // 持ち上げる隕石を掴んでいた指と、巻き込むカタマリを掴んでいた指を離す。
-    // 地面の列は点火位置から上をまとめて取るので、持ち上げない隕石の添字は変わらない。
+    // 持ち上げる隕石を掴んでいた指は離す。
+    // 巻き込んだカタマリの残りを掴んでいた指は、最後に今いる場所へ付け直す。
     // 片方の手で点火しても、関係のない列を運んでいるもう片方の手は離さない
     const held = this.heldMeteors();
     const dropped = new Set<number>();
@@ -1108,8 +1133,8 @@ export class Game {
     this.applyThrust(lump, ignited.length, runs.vertical, bottom);
     this.lumps.push(lump);
     this.scoreIgnition(ignited, lump.combo, runs.vertical);
-    const involvedIds = new Set([...involved].map((l) => l.id));
-    this.dropDrags((d, finger) => dropped.has(finger) || (d.kind === 'lump' && involvedIds.has(d.lumpId)));
+    this.dropDrags((_, finger) => dropped.has(finger));
+    this.rebindDrags(held);
   }
 
   /**

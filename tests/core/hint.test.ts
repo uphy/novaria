@@ -186,6 +186,45 @@ describe('ヒント', () => {
     expect(hinter.arrow(g)?.policy).toBe('build');
   });
 
+  it('浮いているカタマリに、人の手で打っても下から当てられるなら「ドッキングを狙う」方針にする', () => {
+    const g = oneMoveAway();
+    g.lumps = [
+      {
+        id: 777,
+        cells: [
+          { col: 1, rel: 0, meteor: { id: nextId++, kind: Kind.Triangle, revert: 0, fromAttack: false, ignitedAt: -1 } },
+          { col: 1, rel: 1, meteor: { id: nextId++, kind: Kind.Pentagon, revert: 0, fromAttack: false, ignitedAt: -1 } },
+        ],
+        y: 6,
+        vy: 0,
+        thrustFrames: 0,
+        thrustAccel: 0,
+        combo: 1,
+      },
+    ];
+    const hinter = new Hinter();
+    hinter.update(g);
+    expect(hinter.arrow(g)).toMatchObject({ col: 2, policy: 'dock' });
+  });
+
+  it('カタマリが高すぎて下から届かないなら、ドッキングは狙わない', () => {
+    const g = oneMoveAway();
+    g.lumps = [
+      {
+        id: 778,
+        cells: [{ col: 1, rel: 0, meteor: { id: nextId++, kind: Kind.Triangle, revert: 0, fromAttack: false, ignitedAt: -1 } }],
+        y: 13,
+        vy: 0,
+        thrustFrames: 0,
+        thrustAccel: 0,
+        combo: 1,
+      },
+    ];
+    const hinter = new Hinter();
+    hinter.update(g);
+    expect(hinter.arrow(g)?.policy).not.toBe('dock');
+  });
+
   it('手本どおりに運ぶと、その矢印は消える', () => {
     const g = oneMoveAway();
     const hinter = new Hinter();

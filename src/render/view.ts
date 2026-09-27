@@ -27,6 +27,7 @@ export function hintText(arrow: HintArrow): string {
   if (aim.kind === 'shoot') return '一番上を上へ払う';
   const shape = `${aim.vertical ? '縦' : '横'}に ${aim.count} つ`;
   if (aim.kind === 'setup') return `仕込み・あと ${aim.left} 手で${shape}`;
+  if (arrow.policy === 'dock') return `ドッキング・${shape}揃えて下から当てる`;
   return arrow.policy === 'chain' ? `連鎖・${shape}揃えて点火` : `点火・${shape}揃える`;
 }
 
@@ -34,9 +35,11 @@ export function hintText(arrow: HintArrow): string {
 export function policyText(arrow: HintArrow): { name: string; detail: string } {
   switch (arrow.policy) {
     case 'guard':
-      return { name: '守る', detail: `崩さないと、あと約 ${arrow.seconds} 秒で滅亡` };
+      return { name: '守る', detail: `崩さないと約 ${arrow.seconds} 秒で滅亡` };
     case 'air':
       return { name: '空中で組み替える', detail: 'カタマリが浮いているうちに' };
+    case 'dock':
+      return { name: 'ドッキングを狙う', detail: '落ちてくる前に下から当てる' };
     case 'chain':
       return {
         name: '連鎖をつなぐ',
@@ -46,7 +49,7 @@ export function policyText(arrow: HintArrow): { name: string; detail: string } {
             : `×${arrow.combo}・あと ${arrow.comboLeft.toFixed(1)} 秒で切れる`,
       };
     case 'build':
-      return { name: '大きく揃える', detail: '連鎖が切れていて、どの列にも余裕がある' };
+      return { name: '大きく揃える', detail: '連鎖が切れていて余裕がある' };
   }
 }
 
@@ -917,6 +920,10 @@ export class View {
     ctx.fillText(name, x + padX, y + h / 2 + 1);
     ctx.font = `700 ${Math.round(size * 0.9)}px ${SANS}`;
     ctx.fillStyle = UI.textDim;
+    // 狭い画面では説明を札の中で切る（盤面の外へはみ出さない）
+    ctx.beginPath();
+    ctx.rect(x, y, w - padX * 0.5, h);
+    ctx.clip();
     ctx.fillText(detail, x + padX * 2 + nameW, y + h / 2 + 1);
     ctx.restore();
   }

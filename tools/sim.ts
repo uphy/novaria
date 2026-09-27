@@ -205,7 +205,17 @@ function followHints(
   seed: number,
   react: number,
   move: number,
-): { seconds: number; score: number; launched: number; maxCombo: number; guard: number; shoot: number; chain: number } {
+): {
+  seconds: number;
+  score: number;
+  launched: number;
+  maxCombo: number;
+  guard: number;
+  shoot: number;
+  chain: number;
+  dock: number;
+  docked: number;
+} {
   const game = new Game({ seed });
   const hinter = new Hinter();
   let seen = '';
@@ -216,6 +226,8 @@ function followHints(
   let shoot = 0;
   let shown = 0;
   let chain = 0;
+  let dock = 0;
+  let docked = 0;
   while (!game.over && frames < 60 * 60 * 10) {
     hinter.update(game);
     const a = hinter.arrow(game);
@@ -224,6 +236,7 @@ function followHints(
       if (a.tier !== 'attack') guard++;
       if (a.aim.kind === 'shoot') shoot++;
       if (a.policy === 'chain') chain++;
+      if (a.policy === 'dock') dock++;
     }
     const key = a ? `${a.col}:${Math.round(a.from)}:${Math.round(a.to)}` : '';
     if (key !== seen) {
@@ -238,7 +251,7 @@ function followHints(
       }
       rest = move;
     }
-    game.tick();
+    docked += game.tick().airDock;
     frames++;
   }
   return {
@@ -247,6 +260,8 @@ function followHints(
     launched: game.launched.normal + game.launched.dust + game.launched.rare,
     maxCombo: game.maxCombo,
     chain: shown > 0 ? chain / shown : 0,
+    dock: shown > 0 ? dock / shown : 0,
+    docked,
     guard: shown > 0 ? guard / shown : 0,
     shoot: shown > 0 ? shoot / shown : 0,
   };
@@ -256,9 +271,9 @@ function hints(runs: number): void {
   const base = { ...HINT_TUNING };
   // 守りに替える時点を比べるときは、guardSpare を振った行を足す（docs/decisions.md「練習のヒント」）
   const variants: [string, Partial<typeof HINT_TUNING>][] = [
-    ['連鎖をつながない（守る・組み替える・大きく揃える）', { chainPolicy: false }],
-    ['連鎖をつなぐ（浮いているあいだは 2 秒と見積もる）', { chainPolicy: true, airWindow: 120 }],
-    ['連鎖をつなぐ（浮いているあいだは 3 秒と見積もる）', { chainPolicy: true, airWindow: 180 }],
+    ['連鎖もドッキングも狙わない', { chainPolicy: false, dockPolicy: false }],
+    ['連鎖をつなぐ', { chainPolicy: true, dockPolicy: false }],
+    ['連鎖をつなぎ、ドッキングも狙う', { chainPolicy: true, dockPolicy: true }],
   ];
   for (const [react, move] of [
     [60, 40],
@@ -274,6 +289,7 @@ function hints(runs: number): void {
       console.log(`    得点   ${stats(results.map((r) => r.score))}`);
       console.log(`    毎分の得点 ${stats(results.map((r) => (r.score / r.seconds) * 60))}`);
       console.log(`    最大連続 ${stats(results.map((r) => r.maxCombo))} / 連鎖の方針の割合 ${stats(results.map((r) => r.chain * 100))} %`);
+      console.log(`    ドッキングの方針の割合 ${stats(results.map((r) => r.dock * 100), 1)} % / 毎分のドッキング ${stats(results.map((r) => (r.docked / r.seconds) * 60), 1)} 回`);
       console.log(`    守りの矢印の割合 ${stats(results.map((r) => r.guard * 100))} % / うち払う ${stats(results.map((r) => r.shoot * 100), 1)} %`);
     }
   }

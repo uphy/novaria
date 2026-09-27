@@ -12,6 +12,7 @@
  */
 import { VISIBLE_ROWS } from './constants';
 import { groundPlans, planLump, type HintAim, type Move, type Plan } from './cpu';
+import { forecastDock } from './dock';
 import type { Game } from './game';
 import { Kind, type Meteor } from './types';
 
@@ -40,6 +41,10 @@ export const HINT_TUNING = {
   chainPolicy: true,
   /** 空中にカタマリがあって連鎖が切れないあいだ、次の点火に使えると見積もる時間（フレーム） */
   airWindow: 180,
+  /** ドッキングを狙う方針を使うか。`pnpm sim hint` が方針なしと比べるために切る */
+  dockPolicy: true,
+  /** ドッキングの手本は、人が打つのがこれだけ遅れても当たるものに限る（フレーム） */
+  dockSlack: 20,
 };
 /** 手本がまだ使えるかを確かめる間隔（フレーム） */
 const RETHINK_FRAMES = 6;
@@ -52,10 +57,11 @@ export type HintTier = 'attack' | 'guard' | 'urgent';
  * 手本の方針。どの方針で手を選んだかをそのまま出す（手を選んだあとに説明を貼るのではない）。
  * - guard … 守る。滅亡しそうな列を崩す
  * - air … 空中で組み替える。浮いているカタマリの中で揃え直して、もう一段上げる
+ * - dock … ドッキングを狙う。浮いているカタマリに、地面で点火したカタマリを下から当てて一緒に押し上げる
  * - chain … 連鎖をつなぐ。切れる前に次の点火を打つ。得点は「マス数 × 連鎖倍率」なので得点のほとんどがここで決まる
  * - build … 大きく揃える。連鎖が切れていて余裕があるときに、大きく上がる形を作る
  */
-export type HintPolicy = 'guard' | 'air' | 'chain' | 'build';
+export type HintPolicy = 'guard' | 'air' | 'dock' | 'chain' | 'build';
 /** 手の狙い。CPU の思考が出す狙いに、急ぎの守りでだけ使う「一番上を上へ払う」を足したもの */
 export type HintMove = HintAim | { kind: 'shoot' };
 
@@ -101,6 +107,8 @@ interface Held {
   /** 一番上を払う手本なら、払う隕石の id */
   shoot: number | null;
   policy: HintPolicy;
+  /** ドッキングを狙う手本なら、その案。打つまでに当たらなくなっていないかを確かめ直すのに使う */
+  dock: Plan | null;
 }
 
 /** 列の危なさ。left は滅亡までの見積もり、need はその列を崩す一番早い手にかかる時間（どちらもフレーム） */
@@ -189,7 +197,9 @@ export class Hinter {
     const plans = groundPlans(game, true);
     this.pressures = assess(game, plans);
     const held = this.held;
-    const valid = held !== null && current(game, held) !== null;
+    const now = held !== null ? current(game, held) : null;
+    // ドッキングの手本は、残りの手を打つまでに相手が着地したり通り過ぎたりしたら使えない
+    const valid = now !== null && (held!.dock === null || docks(game, held!.dock, now.left));
     const danger = pressing(this.pressures);
     // 守りの要る列が出てきたら、揃う途中の攻めの手本でも替える。
     // 守っている列より早く滅亡しそうな列が出てきたときも、赤くなるのを待たずに乗り換える
@@ -209,7 +219,7 @@ export class Hinter {
 
     const next = think(game, plans, danger);
     // 守りの手が見つからず同じ方針に戻るだけなら、使える手本はそのまま出し続ける
-    if (valid && held.guard === null && next?.guard === null && next.policy === held.policy) return;
+    if (valid && held !== null && held.guard === null && next?.guard === null && next.policy === held.policy) return;
     this.held = next;
   }
 
@@ -250,8 +260,38 @@ function chainBudget(game: Game): number {
 }
 
 /**
+ * plan を残り moves 手で打ち終えたとき、浮いているカタマリに当たるか。
+ * 人は見積もりより早く打つことも遅れることもあるので、手早く打った場合・見積もりどおりの場合・少し遅れた場合の
+ * どれでも当たるものだけにする
+ */
+function docks(game: Game, plan: Plan, moves: number): boolean {
+  const delay = handFrames(moves);
+  const early = Math.max(0, delay - HINT_TUNING.moveFrames);
+  return [early, delay, delay + HINT_TUNING.dockSlack].every((d) => forecastDock(game, plan, d) !== null);
+}
+
+/**
+ * ドッキングを狙う手本。浮いているカタマリの下の列で点火する案のうち、人の手で打っても当たるものを選ぶ。
+ * 当たる相手が大きいほど、一緒に押し上げて宇宙へ出せる隕石が多い
+ */
+function dockPlan(game: Game, plans: Plan[]): Held | null {
+  if (game.lumps.length === 0) return null;
+  const under = new Set(game.lumps.flatMap((l) => l.cells.map((c) => c.col)));
+  let best: { plan: Plan; score: number } | null = null;
+  for (const plan of plans) {
+    if (plan.moves.length > 2 || !plan.pattern.some((c) => under.has(c.col))) continue;
+    if (!docks(game, plan, plan.moves.length)) continue;
+    const hit = forecastDock(game, plan, handFrames(plan.moves.length))!;
+    const score = hit.size * 2 + plan.pattern.length - plan.moves.length * HINT_TUNING.moveCost;
+    if (best === null || score > best.score) best = { plan, score };
+  }
+  if (!best) return null;
+  return { ...fromGround(game, best.plan, null, 'dock'), dock: best.plan };
+}
+
+/**
  * 手本を選ぶ。方針は上から順に見て、打てる手がある最初の方針にする。
- * 守る → 空中で組み替える → 連鎖をつなぐ → 大きく揃える
+ * 守る → 空中で組み替える → ドッキングを狙う → 連鎖をつなぐ → 大きく揃える
  */
 function think(game: Game, plans: Plan[], danger: Pressure | null): Held | null {
   if (danger) {
@@ -270,7 +310,12 @@ function think(game: Game, plans: Plan[], danger: Pressure | null): Held | null 
       guard: null,
       shoot: null,
       policy: 'air',
+      dock: null,
     };
+  }
+  if (HINT_TUNING.dockPolicy) {
+    const dock = dockPlan(game, plans);
+    if (dock) return dock;
   }
   if (game.combo > 0 && HINT_TUNING.chainPolicy) {
     const chain = chainPlan(game, plans);
@@ -331,6 +376,7 @@ function guardPlan(game: Game, plans: Plan[], danger: Pressure): Held | null {
     guard: col,
     shoot: top.id,
     policy: 'guard',
+    dock: null,
   };
 }
 
@@ -345,6 +391,7 @@ function fromGround(game: Game, plan: Plan, guard: number | null, policy: HintPo
     guard,
     shoot: null,
     policy,
+    dock: null,
   };
 }
 

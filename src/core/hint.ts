@@ -3,7 +3,7 @@
  * 盤面は毎フレーム変わるので、毎回考え直すと手本が入れ替わり続けて読めない。
  * 手本は隕石の id で覚えておき、打てなくなるか一定の時間がたつまで同じものを出す
  */
-import { suggest } from './cpu';
+import { suggest, type HintAim } from './cpu';
 import type { Game } from './game';
 import type { Meteor } from './types';
 
@@ -17,6 +17,8 @@ export interface HintArrow {
   col: number;
   from: number;
   to: number;
+  /** 何を狙った手か */
+  aim: HintAim;
 }
 
 interface Held {
@@ -29,6 +31,7 @@ interface Held {
   to: number;
   /** 考えたときに運び先にいた隕石。入れ替わっていたら、盤面が変わったので手本も古い */
   targetId: number;
+  aim: HintAim;
 }
 
 export class Hinter {
@@ -67,7 +70,7 @@ export class Hinter {
     const from = list.findIndex((c) => c.meteor.id === h.meteorId);
     const to = list[h.to];
     if (from < 0 || !to || from === h.to) return null;
-    return { col: h.col, from: list[from].row, to: to.row };
+    return { col: h.col, from: list[from].row, to: to.row, aim: h.aim };
   }
 
   private think(game: Game): Held | null {
@@ -77,7 +80,15 @@ export class Hinter {
     const meteor = list?.[s.from]?.meteor;
     const target = list?.[s.to]?.meteor;
     if (!meteor || !target || s.from === s.to) return null;
-    return { kind: s.kind, lumpId: s.lumpId, col: s.col, meteorId: meteor.id, to: s.to, targetId: target.id };
+    return {
+      kind: s.kind,
+      lumpId: s.lumpId,
+      col: s.col,
+      meteorId: meteor.id,
+      to: s.to,
+      targetId: target.id,
+      aim: s.aim,
+    };
   }
 
   private stillValid(game: Game, h: Held): boolean {

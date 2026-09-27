@@ -25,6 +25,7 @@ test('一時停止でヒントをつけると、揃う 1 手が矢印で出る',
     const h = window.__novaria.hint;
     return h !== null && h.col === 2 && h.from === 1 && h.to === 0;
   });
+  expect(await page.evaluate(() => window.__novaria.hint?.aim.kind)).toBe('ignite');
 });
 
 test('ヒントをつけたゲームは、消しても記録に残さない', async ({ page }) => {

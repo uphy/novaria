@@ -1,5 +1,6 @@
 import { ATMOSPHERE_ROWS, SCORE, SCREEN_OUT_ROW, VISIBLE_ROWS } from '../core/constants';
 import { Game, burnHeat } from '../core/game';
+import type { HintAim } from '../core/cpu';
 import type { HintArrow } from '../core/hint';
 import { Kind, isRareMetal, type Meteor, type RivalView } from '../core/types';
 import { Effects } from './effects';
@@ -9,6 +10,15 @@ import { TILE_RADIUS, bakedFlame, drawTile, makeBakeCanvas, roundRect, setTileSc
 
 /** 得点の並びの左右の余白 */
 const HUD_PAD = 14;
+/** ヒントの矢印に添える狙いの説明。狭い画面でも 1 行に収まる長さにする */
+export function hintText(aim: HintAim): string {
+  if (aim.kind === 'chain') return '空中で揃え直して連続点火';
+  const way = aim.vertical ? '縦' : '横';
+  if (aim.kind === 'setup') return `仕込み・あと ${aim.left} 手で${way}に ${aim.count} つ`;
+  if (aim.breaks) return `${way}に揃えて高い列を崩す`;
+  return `${way}に ${aim.count} つ揃えて点火`;
+}
+
 /** 練習のヒントの色。盤面の差し色（水色）とも連鎖の黄色とも混ざらない緑にする */
 const HINT_COLOR = '#8dffb4';
 /**
@@ -294,7 +304,7 @@ export class View {
     }
     this.drawField(ctx, game, danger);
     this.drawBlocks(ctx, game, fx);
-    if (hint?.arrow) this.drawHint(ctx, hint.arrow, game.frame);
+    if (hint?.arrow) this.drawHint(ctx, hint.arrow, game);
     // 負けの暗い幕。隕石の上に敷き、粒と花火はその上に出す
     fx.drawDim(ctx, L.fieldX, this.rowTop(SCREEN_OUT_ROW - 1), L.fieldW, L.fieldBottomY);
     if (reveal < 1) {
@@ -731,8 +741,9 @@ export class View {
    * 練習のヒント。運ぶ隕石を縁取り、運び先を点線の枠で囲んで、そのあいだを矢印でつなぐ。
    * 光りは shadowBlur を使わず、太い薄線の上に細い濃線を重ねて出す
    */
-  private drawHint(ctx: CanvasRenderingContext2D, arrow: HintArrow, frame: number): void {
+  private drawHint(ctx: CanvasRenderingContext2D, arrow: HintArrow, game: Game): void {
     const L = this.layout;
+    const frame = game.frame;
     const x = this.colLeft(arrow.col);
     const fromY = this.rowTop(arrow.from);
     const toY = this.rowTop(arrow.to);
@@ -782,7 +793,44 @@ export class View {
       ctx.lineTo(cx, y1);
       ctx.lineTo(cx + head, y1 - dir * head);
     });
+    ctx.setLineDash([]);
+    this.drawHintLabel(ctx, hintText(arrow.aim), arrow, game);
     ctx.restore();
+  }
+
+  /**
+   * 矢印に添える狙いの札。盤面の外にはみ出さないよう、列が右寄りなら左に、左寄りなら右に出す。
+   * 隣の列には揃える相手が並んでいることが多いので、札がかかる列の山より上に出して隠さない
+   */
+  private drawHintLabel(ctx: CanvasRenderingContext2D, text: string, arrow: HintArrow, game: Game): void {
+    const col = arrow.col;
+    const L = this.layout;
+    const size = Math.max(11, Math.round(L.cell * 0.28));
+    ctx.font = `800 ${size}px ${SANS}`;
+    const padX = size * 0.6;
+    const w = ctx.measureText(text).width + padX * 2;
+    const h = size * 1.7;
+    const cols = Math.round(L.fieldW / L.cell);
+    const right = col < cols / 2;
+    const x = right
+      ? Math.min(this.colLeft(col + 1) + 4, L.fieldX + L.fieldW - w - 2)
+      : Math.max(this.colLeft(col) - w - 4, L.fieldX + 2);
+    let peak = Math.max(arrow.from, arrow.to);
+    for (let c = Math.floor((x - L.fieldX) / L.cell); c <= Math.floor((x + w - L.fieldX) / L.cell); c++) {
+      peak = Math.max(peak, (game.ground[c]?.length ?? 0) - 1);
+    }
+    const y = Math.round(this.rowTop(peak) - h - 4);
+    ctx.fillStyle = 'rgba(4,16,10,0.86)';
+    roundRect(ctx, x, y, w, h, h / 2);
+    ctx.fill();
+    ctx.strokeStyle = rgba(HINT_COLOR, 0.8);
+    ctx.lineWidth = Math.max(1.5, L.cell * 0.04);
+    ctx.stroke();
+    ctx.fillStyle = HINT_COLOR;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + padX, y + h / 2 + 1);
+    ctx.textBaseline = 'alphabetic';
   }
 
   /** ヒントをつけている印。一時停止ボタンの下に出す（このゲームは記録に残らない） */

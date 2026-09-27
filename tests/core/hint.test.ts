@@ -5,17 +5,19 @@ import { Kind } from '../../src/core/types';
 
 let nextId = 5000;
 
-/** 左の 3 列だけに積んだ盤面。3 列目の丸を 1 つ下ろせば、いちばん下で丸が横に 3 つ揃う */
-function oneMoveAway(): Game {
+/** 列ごとに下から積んだ盤面。降ってくる隕石は消しておく */
+function board(columns: Kind[][]): Game {
   const g = new Game({ seed: 3, rareMetal: false });
-  const put = (kinds: Kind[]) =>
-    kinds.map((kind) => ({ id: nextId++, kind, revert: 0, fromAttack: false, ignitedAt: -1 }));
-  g.ground = g.ground.map(() => []);
-  g.ground[0] = put([Kind.Circle]);
-  g.ground[1] = put([Kind.Circle]);
-  g.ground[2] = put([Kind.Drop, Kind.Circle]);
+  g.ground = g.ground.map((_, c) =>
+    (columns[c] ?? []).map((kind) => ({ id: nextId++, kind, revert: 0, fromAttack: false, ignitedAt: -1 })),
+  );
   g.fallings = [];
   return g;
+}
+
+/** 3 列目の丸を 1 つ下ろせば、いちばん下で丸が横に 3 つ揃う */
+function oneMoveAway(): Game {
+  return board([[Kind.Circle], [Kind.Circle], [Kind.Drop, Kind.Circle]]);
 }
 
 describe('ヒント', () => {
@@ -23,7 +25,32 @@ describe('ヒント', () => {
     const g = oneMoveAway();
     const hinter = new Hinter();
     hinter.update(g);
-    expect(hinter.arrow(g)).toEqual({ col: 2, from: 1, to: 0 });
+    expect(hinter.arrow(g)).toEqual({
+      col: 2,
+      from: 1,
+      to: 0,
+      aim: { kind: 'ignite', vertical: false, count: 3, breaks: false },
+    });
+  });
+
+  it('2 手かかる揃いは、1 手目を「仕込み」として出す', () => {
+    // 2 列目と 3 列目の丸をどちらも下ろして、はじめて横に揃う
+    const g = board([[Kind.Circle], [Kind.Drop, Kind.Circle], [Kind.Drop, Kind.Circle]]);
+    const hinter = new Hinter();
+    hinter.update(g);
+    expect(hinter.arrow(g)?.aim).toEqual({ kind: 'setup', vertical: false, count: 3, left: 2 });
+  });
+
+  it('高く積もった列を縦に揃えて低くする手は「崩す」として出す', () => {
+    // 11 段の列。三角のほかはどの柄も 2 つまで。下の三角（row 6）を row 8 まで上げれば、上の 2 つと縦に三角が 3 つ並ぶ
+    const tall = [
+      Kind.Circle, Kind.Drop, Kind.Square, Kind.Hexagon, Kind.Circle, Kind.Drop,
+      Kind.Triangle, Kind.Square, Kind.Hexagon, Kind.Triangle, Kind.Triangle,
+    ];
+    const g = board([[], [], [], [], tall]);
+    const hinter = new Hinter();
+    hinter.update(g);
+    expect(hinter.arrow(g)?.aim).toEqual({ kind: 'ignite', vertical: true, count: 3, breaks: true });
   });
 
   it('手本どおりに運ぶと、その矢印は消える', () => {

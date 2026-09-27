@@ -100,6 +100,8 @@ let finale: { t: number; outcome: 'win' | 'lose' | 'draw'; len: number } | null 
 let margin: { mine: number; mineDanger: boolean; rival: number; rivalDanger: boolean } | null = null;
 /** 前のフレームに危ない列があったか。警告が出た瞬間だけ揺らすのに使う */
 let wasDanger = false;
+/** 前のフレームに予兆の列があったか。予兆が出た瞬間だけ振動させるのに使う */
+let wasWarn = false;
 let boostHeld = false;
 /**
  * 練習のヒントを出すか。一時停止の画面で切り替える。
@@ -1356,6 +1358,7 @@ function beginPlay(started: Game): void {
   fx.resetShow();
   view.lightsOn();
   wasDanger = false;
+  wasWarn = false;
   boostHeld = false;
   touches.clear();
   levelMark = 0;
@@ -1968,10 +1971,11 @@ function step(): void {
   }
   if (ev.danger) audio.danger(game.frame, game.dangerRatio());
   else audio.safe();
-  // 予兆（あと 1 段）は出た瞬間に 1 度だけ鳴らす
+  // 予兆（あと 1 段）は出た瞬間に 1 度だけ鳴らし、指にも短く返す。
+  // 予兆は盤面の上端に出るので、目線が下にあると見落とす。振動なら目を向けていなくても分かる
   audio.warn(ev.warn);
-  // 警告が出た瞬間だけ、画面を揺らして指にも返す。
-  // 赤い点滅は盤面を見ていないと気づけないが、揺れと振動なら手元でも分かる
+  if (ev.warn && !wasWarn && !ev.danger) navigator.vibrate?.(20);
+  wasWarn = ev.warn;
   // レベルの節目。20 ごとに帯で知らせる（降る速さが上がったことに気づけるように）
   const lv = Math.floor((game.level * 100) / LEVEL_STEP) * LEVEL_STEP;
   if (lv > levelMark) {
@@ -1981,6 +1985,8 @@ function step(): void {
       audio.fanfare('levelUp');
     }
   }
+  // 警告が出た瞬間だけ、画面を揺らして指にも返す。
+  // 赤い点滅は盤面を見ていないと気づけないが、揺れと振動なら手元でも分かる
   if (ev.danger && !wasDanger) {
     fx.addShake(7);
     navigator.vibrate?.(30);

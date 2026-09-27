@@ -156,6 +156,11 @@ export class Game {
    * 数え上げはまだ始まっていないので、崩せば消える
    */
   warnings: boolean[] = [];
+  /**
+   * 列ごとの、滅亡しうる塔の高さ。燃えカスを含む列と空中のカタマリが覆う列は 0。
+   * 発射台の灯に使う（`WATCH_ROWS` から光る）
+   */
+  towers: number[] = [];
 
   frame = 0;
   score = 0;
@@ -218,6 +223,7 @@ export class Game {
       this.ground.push([]);
       this.breakTimers.push(null);
       this.warnings.push(false);
+      this.towers.push(0);
     }
     this.setupInitialField();
   }
@@ -387,6 +393,7 @@ export class Game {
       drags: this.drags,
       breakTimers: this.breakTimers,
       warnings: this.warnings,
+      towers: this.towers,
       launched: this.launched,
     });
     Object.assign(g, data);
@@ -1240,6 +1247,7 @@ export class Game {
       const exempt = hasDust || covered.has(c);
       const danger = stack.length >= VISIBLE_ROWS && !exempt;
       this.warnings[c] = !danger && stack.length >= WARN_ROWS && !exempt;
+      this.towers[c] = exempt ? 0 : stack.length;
       if (this.warnings[c]) this.events.warn = true;
       if (!danger) {
         this.breakTimers[c] = null;

@@ -10,6 +10,7 @@ import {
   SCREEN_OUT_ROW,
   VISIBLE_ROWS,
   WARN_ROWS,
+  WATCH_ROWS,
 } from '../../src/core/constants';
 
 function meteor(kind: Kind, id = Math.floor(Math.random() * 1e6)) {
@@ -207,6 +208,16 @@ describe('予兆', () => {
     expect(g.ground[0].length).toBe(WARN_ROWS);
     expect(g.warnings[0]).toBe(false);
     expect(g.hasWarning()).toBe(false);
+  });
+
+  it('発射台の灯に使う塔の高さは、滅亡しうる列だけに入る', () => {
+    const dusty = [Kind.Dust, ...tallOf(WATCH_ROWS - 1)];
+    const g = stillGame([tallOf(WATCH_ROWS), dusty, tallOf(2)]);
+    g.ground[1][0].revert = 99999;
+    g.tick();
+    expect(g.towers[0]).toBe(WATCH_ROWS);
+    expect(g.towers[1]).toBe(0);
+    expect(g.towers[2]).toBe(2);
   });
 });
 

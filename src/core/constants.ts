@@ -27,6 +27,12 @@ export const ATMOSPHERE_ROWS = 2;
  *（docs/decisions.md「ピンチの知らせ方」）
  */
 export const WARN_ROWS = VISIBLE_ROWS - 1;
+/**
+ * 発射台の灯で塔を知らせ始める高さ。予兆の 2 段下。
+ * 目線は盤面の下にあり、上端の予兆には気づきにくいので、盤面の下の発射台で先に知らせる。
+ * 実測では、滅亡した列はこの高さに 9.8 秒前から居る（docs/decisions.md「塔を発射台で知らせる」）
+ */
+export const WATCH_ROWS = WARN_ROWS - 2;
 /** この row を完全に越えた隕石はスクリーンアウトする */
 export const SCREEN_OUT_ROW = VISIBLE_ROWS + ATMOSPHERE_ROWS;
 /**

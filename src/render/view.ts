@@ -1,4 +1,4 @@
-import { ATMOSPHERE_ROWS, SCORE, SCREEN_OUT_ROW, VISIBLE_ROWS } from '../core/constants';
+import { ATMOSPHERE_ROWS, SCORE, SCREEN_OUT_ROW, VISIBLE_ROWS, WATCH_ROWS } from '../core/constants';
 import { Game, burnHeat } from '../core/game';
 import type { HintArrow, HintPolicy, HintTier } from '../core/hint';
 import { Kind, isRareMetal, type Meteor, type RivalView } from '../core/types';
@@ -129,6 +129,7 @@ export class View {
   private chrome: Chrome | null = null;
   /** 列を塗る光の帯（予兆・警告・掴んでいる列）。色ごとに焼いておく */
   private lanes = new Map<string, HTMLCanvasElement>();
+  private padLamps = new Map<string, HTMLCanvasElement>();
   /** 加速の帯。離しているときと押しているときの 2 枚 */
   private boostPlates: [HTMLCanvasElement, HTMLCanvasElement] | null = null;
   /** 得点の表示。実際の得点へ数フレームかけて数え上がる */
@@ -166,6 +167,7 @@ export class View {
     this.cols = cols;
     this.chrome = null;
     this.lanes.clear();
+    this.padLamps.clear();
     this.boostPlates = null;
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -345,6 +347,7 @@ export class View {
     }
     this.drawField(ctx, game, danger);
     this.drawBlocks(ctx, game, fx);
+    this.drawTowerLamps(ctx, game);
     if (hint?.arrow) this.drawHint(ctx, hint.arrow, game);
     // 負けの暗い幕。隕石の上に敷き、粒と花火はその上に出す
     fx.drawDim(ctx, L.fieldX, this.rowTop(SCREEN_OUT_ROW - 1), L.fieldW, L.fieldBottomY);
@@ -569,6 +572,74 @@ export class View {
     ctx.fillRect(cell - 1.5, 0, 1.5, fieldH);
     this.lanes.set(color, ctx.canvas);
     return ctx.canvas;
+  }
+
+  /**
+   * 発射台の 1 列ぶんを塗る灯。台の上の縁が最も明るく、台の下へ薄れ、上は一番下の隕石に滲む。
+   * 台は暗いので、足し合わせずにそのまま塗る
+   */
+  private padLamp(color: string): HTMLCanvasElement {
+    const hit = this.padLamps.get(color);
+    if (hit) return hit;
+    const { cell } = this.layout;
+    const groundH = Math.round(cell * 0.5);
+    const up = Math.round(cell * 0.6);
+    const ctx = makeBakeCanvas(cell, up + groundH);
+    const halo = ctx.createLinearGradient(0, 0, 0, up);
+    halo.addColorStop(0, rgba(color, 0));
+    halo.addColorStop(1, rgba(color, 0.55));
+    ctx.fillStyle = halo;
+    ctx.fillRect(1, 0, cell - 2, up);
+    const plate = ctx.createLinearGradient(0, up, 0, up + groundH);
+    plate.addColorStop(0, rgba(color, 1));
+    plate.addColorStop(1, rgba(color, 0.55));
+    ctx.fillStyle = plate;
+    ctx.fillRect(1, up, cell - 2, groundH);
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillRect(1, up, cell - 2, 2);
+    this.padLamps.set(color, ctx.canvas);
+    return ctx.canvas;
+  }
+
+  /**
+   * 塔の高さを発射台の灯で知らせる。目線は盤面の下にあり、上端の予兆や警告には気づきにくいので、
+   * 高くなってきた列の足もとを光らせる。`WATCH_ROWS` で薄く、1 段ごとに強く、
+   * 予兆の高さで脈打ち、数え上げが始まったら上端の警告と同じ赤で明滅する
+   * （docs/decisions.md「塔を発射台で知らせる」）
+   */
+  private drawTowerLamps(ctx: CanvasRenderingContext2D, game: Game): void {
+    const L = this.layout;
+    const up = Math.round(L.cell * 0.6);
+    const y = L.fieldBottomY - up;
+    const h = up + Math.round(L.cell * 0.5);
+    for (let c = 0; c < game.cols; c++) {
+      const timer = game.breakTimers[c];
+      const height = game.towers[c] ?? 0;
+      let color: string = UI.warn;
+      let alpha: number;
+      if (timer !== null) {
+        const left = Math.max(0, Math.min(1, timer / game.breakFrames));
+        color = UI.danger;
+        alpha = 0.55 + 0.45 * Math.abs(Math.sin(game.frame * (0.22 + 0.34 * (1 - left))));
+      } else if (game.warnings[c]) {
+        alpha = 0.6 + 0.4 * Math.abs(Math.sin(game.frame * 0.07));
+      } else if (height >= WATCH_ROWS + 1) {
+        alpha = 0.6;
+      } else if (height >= WATCH_ROWS) {
+        alpha = 0.35;
+      } else {
+        continue;
+      }
+      const x = this.colLeft(c);
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(this.padLamp(color), x, y, L.cell, h);
+      // 台の縁から光を広げる。列の幅より少し広く滲ませて、目の端でも拾えるようにする
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = alpha * 0.8;
+      ctx.drawImage(glowSprite(color), x - L.cell * 0.4, L.fieldBottomY - L.cell * 0.6, L.cell * 1.8, L.cell * 1.2);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    ctx.globalAlpha = 1;
   }
 
   private drawField(ctx: CanvasRenderingContext2D, game: Game, danger: number): void {

@@ -272,4 +272,33 @@ describe('ヒント', () => {
     const other = oneMoveAway();
     expect(hinter.arrow(other)).toBeNull();
   });
+
+  // レアメタルは取り方を知らないと最下段に溜まるだけになる。ヒントで打ち上げ方を見せる
+  describe('レアメタル', () => {
+    it('下で点火すればレアメタルごと宇宙へ出せるなら、その点火を「レアメタルを打ち上げる」方針で出す', () => {
+      const g = board([
+        [Kind.Leaf],
+        [Kind.Hexagon],
+        [
+          ...Array.from({ length: 5 }, (_, i) => (i % 2 === 0 ? Kind.Circle : Kind.Pentagon)),
+          Kind.Triangle,
+          Kind.Triangle,
+          Kind.Drop,
+          Kind.Triangle,
+          Kind.Spark,
+        ],
+      ]);
+      const hinter = new Hinter();
+      hinter.update(g);
+      expect(hinter.arrow(g)).toMatchObject({ col: 2, from: 8, to: 7, policy: 'rare' });
+
+      // 見積もりが本物の打ち上げと合っているか。手本どおりに打つと、レアメタルが宇宙へ出る
+      g.fallings = [];
+      g.grab(2, 8);
+      g.dragBy(-1);
+      g.release();
+      for (let i = 0; i < 600 && g.launched.rare === 0; i++) g.tick();
+      expect(g.launched.rare).toBe(1);
+    });
+  });
 });

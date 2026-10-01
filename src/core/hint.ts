@@ -14,7 +14,7 @@ import { VISIBLE_ROWS } from './constants';
 import { groundPlans, planLump, type HintAim, type Move, type Plan } from './cpu';
 import { forecastDock } from './dock';
 import type { Game } from './game';
-import { Kind, type Meteor } from './types';
+import { Kind, isRareMetal, type Meteor } from './types';
 
 /**
  * 人に合わせた見積もりの数値。`pnpm sim hint` が値を振って測るので、書き換えられる形で置く
@@ -45,6 +45,8 @@ export const HINT_TUNING = {
   dockPolicy: true,
   /** ドッキングの手本は、人が打つのがこれだけ遅れても当たるものに限る（フレーム） */
   dockSlack: 20,
+  /** レアメタルを打ち上げる方針を使うか。`pnpm sim hint` が方針なしと比べるために切る */
+  rarePolicy: true,
 };
 /** 手本がまだ使えるかを確かめる間隔（フレーム） */
 const RETHINK_FRAMES = 6;
@@ -59,9 +61,10 @@ export type HintTier = 'attack' | 'guard' | 'urgent';
  * - air … 空中で組み替える。浮いているカタマリの中で揃え直して、もう一段上げる
  * - dock … ドッキングを狙う。浮いているカタマリに、地面で点火したカタマリを下から当てて一緒に押し上げる
  * - chain … 連鎖をつなぐ。切れる前に次の点火を打つ。得点は「マス数 × 連鎖倍率」なので得点のほとんどがここで決まる
+ * - rare … レアメタルを打ち上げる。レアメタルごと宇宙へ出せる点火を打つ（1 個 10,000 点）
  * - build … 大きく揃える。連鎖が切れていて余裕があるときに、大きく上がる形を作る
  */
-export type HintPolicy = 'guard' | 'air' | 'dock' | 'chain' | 'build';
+export type HintPolicy = 'guard' | 'air' | 'dock' | 'chain' | 'rare' | 'build';
 /** 手の狙い。CPU の思考が出す狙いに、急ぎの守りでだけ使う「一番上を上へ払う」を足したもの */
 export type HintMove = HintAim | { kind: 'shoot' };
 
@@ -312,7 +315,7 @@ function dockPlan(game: Game, plans: Plan[]): Held | null {
 
 /**
  * 手本を選ぶ。方針は上から順に見て、打てる手がある最初の方針にする。
- * 守る → 空中で組み替える → ドッキングを狙う → 連鎖をつなぐ → 大きく揃える
+ * 守る → 空中で組み替える → レアメタルを打ち上げる → ドッキングを狙う → 連鎖をつなぐ → 大きく揃える
  */
 function think(game: Game, plans: Plan[], danger: Pressure | null): Held | null {
   if (danger) {
@@ -334,6 +337,9 @@ function think(game: Game, plans: Plan[], danger: Pressure | null): Held | null 
       dock: null,
     };
   }
+  // レアメタルは 1 個で 1 試合の得点の 1 割を超えるので、宇宙へ出せる点火があればドッキングより先に打つ
+  const launch = HINT_TUNING.rarePolicy ? rareLaunchPlan(game, plans) : null;
+  if (launch) return launch;
   if (HINT_TUNING.dockPolicy) {
     const dock = dockPlan(game, plans);
     if (dock) return dock;
@@ -349,6 +355,49 @@ function think(game: Game, plans: Plan[], danger: Pressure | null): Held | null 
     if (best === null || score > best.score) best = { plan, score };
   }
   return best ? fromGround(game, best.plan, null, 'build') : null;
+}
+
+/** 地面に居座っているレアメタル。列と、列の中の添字 */
+function rareMetals(game: Game): { col: number; index: number; meteor: Meteor }[] {
+  const found: { col: number; index: number; meteor: Meteor }[] = [];
+  game.ground.forEach((stack, col) =>
+    stack.forEach((meteor, index) => {
+      if (isRareMetal(meteor.kind)) found.push({ col, index, meteor });
+    }),
+  );
+  return found;
+}
+
+/** plan の手を打ち終えたとき、列 col の中で隕石 id がいる添字 */
+function indexAfter(game: Game, plan: Plan, col: number, id: number): number {
+  const list = game.ground[col].map((m) => m.id);
+  for (const m of plan.moves) {
+    if (m.col !== col) continue;
+    list.splice(m.to, 0, ...list.splice(m.from, 1));
+  }
+  return list.indexOf(id);
+}
+
+/**
+ * レアメタルを宇宙へ出す点火の手本。点火すると大気圏を抜ける隕石は列の上から数えるので、
+ * 手を打ち終えたあとのレアメタルの段がその中に入っていれば一緒に抜ける。手数の少ないものを選ぶ
+ */
+function rareLaunchPlan(game: Game, plans: Plan[]): Held | null {
+  const rares = rareMetals(game);
+  if (rares.length === 0) return null;
+  let best: { plan: Plan; score: number } | null = null;
+  for (const plan of plans) {
+    let launched = 0;
+    for (const r of rares) {
+      const out = plan.out.get(r.col) ?? 0;
+      if (out === 0) continue;
+      if (indexAfter(game, plan, r.col, r.meteor.id) >= game.ground[r.col].length - out) launched++;
+    }
+    if (launched === 0) continue;
+    const score = launched * 10 - plan.moves.length * HINT_TUNING.moveCost + plan.value * 0.1;
+    if (best === null || score > best.score) best = { plan, score };
+  }
+  return best ? fromGround(game, best.plan, null, 'rare') : null;
 }
 
 /**

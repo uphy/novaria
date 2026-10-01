@@ -215,6 +215,7 @@ function followHints(
   chain: number;
   dock: number;
   docked: number;
+  rare: number;
 } {
   const game = new Game({ seed });
   const hinter = new Hinter();
@@ -262,6 +263,7 @@ function followHints(
     chain: shown > 0 ? chain / shown : 0,
     dock: shown > 0 ? dock / shown : 0,
     docked,
+    rare: game.launched.rare,
     guard: shown > 0 ? guard / shown : 0,
     shoot: shown > 0 ? shoot / shown : 0,
   };
@@ -271,9 +273,10 @@ function hints(runs: number): void {
   const base = { ...HINT_TUNING };
   // 守りに替える時点を比べるときは、guardSpare を振った行を足す（docs/decisions.md「練習のヒント」）
   const variants: [string, Partial<typeof HINT_TUNING>][] = [
-    ['連鎖もドッキングも狙わない', { chainPolicy: false, dockPolicy: false }],
-    ['連鎖をつなぐ', { chainPolicy: true, dockPolicy: false }],
-    ['連鎖をつなぎ、ドッキングも狙う', { chainPolicy: true, dockPolicy: true }],
+    ['連鎖もドッキングも狙わない', { chainPolicy: false, dockPolicy: false, rarePolicy: false }],
+    ['連鎖をつなぐ', { chainPolicy: true, dockPolicy: false, rarePolicy: false }],
+    ['連鎖をつなぎ、ドッキングも狙う', { chainPolicy: true, dockPolicy: true, rarePolicy: false }],
+    ['連鎖・ドッキング・レアメタル', { chainPolicy: true, dockPolicy: true, rarePolicy: true }],
   ];
   for (const [react, move] of [
     [60, 40],
@@ -290,6 +293,7 @@ function hints(runs: number): void {
       console.log(`    毎分の得点 ${stats(results.map((r) => (r.score / r.seconds) * 60))}`);
       console.log(`    最大連続 ${stats(results.map((r) => r.maxCombo))} / 連鎖の方針の割合 ${stats(results.map((r) => r.chain * 100))} %`);
       console.log(`    ドッキングの方針の割合 ${stats(results.map((r) => r.dock * 100), 1)} % / 毎分のドッキング ${stats(results.map((r) => (r.docked / r.seconds) * 60), 1)} 回`);
+      console.log(`    レアメタルの打ち上げ ${stats(results.map((r) => r.rare), 1)} 個`);
       console.log(`    守りの矢印の割合 ${stats(results.map((r) => r.guard * 100))} % / うち払う ${stats(results.map((r) => r.shoot * 100), 1)} %`);
     }
   }

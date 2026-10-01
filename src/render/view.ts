@@ -28,6 +28,7 @@ export function hintText(arrow: HintArrow): string {
   const shape = `${aim.vertical ? '縦' : '横'}に ${aim.count} つ`;
   if (aim.kind === 'setup') return `仕込み・あと ${aim.left} 手で${shape}`;
   if (arrow.policy === 'dock') return `ドッキング・${shape}揃えて下から当てる`;
+  if (arrow.policy === 'rare') return `レアメタル・${shape}揃えて一緒に打ち上げる`;
   return arrow.policy === 'chain' ? `連鎖・${shape}揃えて点火` : `点火・${shape}揃える`;
 }
 
@@ -48,6 +49,8 @@ export function policyText(arrow: HintArrow): { name: string; detail: string } {
             ? `×${arrow.combo}・浮いているあいだは切れない`
             : `×${arrow.combo}・あと ${arrow.comboLeft.toFixed(1)} 秒で切れる`,
       };
+    case 'rare':
+      return { name: 'レアメタルを打ち上げる', detail: '下で点火して一緒に宇宙へ出す' };
     case 'build':
       return { name: '大きく揃える', detail: '連鎖が切れていて余裕がある' };
   }

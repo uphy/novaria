@@ -1887,11 +1887,13 @@ function step(): void {
     const py = view.rowTop(mid.row);
     if (ig.combo >= 2) {
       const color = ig.combo >= 6 ? '#ff9ad8' : ig.combo >= 4 ? '#ffb347' : UI.combo;
-      fx.chain(px, py, ig.combo, color, 24 + Math.min(26, ig.combo * 3));
-      // 倍率の上限に届いた瞬間だけ帯で知らせる。ここから先は何連鎖しても倍率は増えない
+      // 倍率の上限に届いた瞬間だけ帯で知らせる。ここから先は何連鎖しても倍率は増えない。
+      // 次の点火を急ぐ場面なので、帯は大気圏の中に出し、同じ数を言う連鎖の吹き出しは出さない
       if (ig.combo === SCORE.maxComboMultiplier) {
-        fx.banner('MAX CHAIN', `SCORE ×${ig.combo}`, UI.combo, 70);
+        fx.banner('MAX CHAIN', `${ig.combo} CHAIN · SCORE ×${ig.combo}`, UI.combo, 70, 0, 'sky');
         audio.fanfare('maxChain');
+      } else {
+        fx.chain(px, py, ig.combo, color, 24 + Math.min(26, ig.combo * 3));
       }
       fx.addShake(3 + ig.combo * 1.6);
       fx.addFlash(0.08 + ig.combo * 0.035);
@@ -1967,7 +1969,7 @@ function step(): void {
   if (ev.screenClear) {
     audio.screenClear();
     fx.addFlash(1);
-    fx.banner('ALL CLEAR', `全消し +${(game.cols * 1000).toLocaleString()}`, '#ffffff');
+    fx.banner('ALL CLEAR', `全消し +${(game.cols * 1000).toLocaleString()}`, '#ffffff', 84, 0, 'sky');
   }
   if (ev.danger) audio.danger(game.frame, game.dangerRatio());
   else audio.safe();
@@ -1981,7 +1983,7 @@ function step(): void {
   if (lv > levelMark) {
     levelMark = lv;
     if (!ev.gameOver) {
-      fx.banner(lv >= 100 ? 'MAX LEVEL' : 'LEVEL UP', `LV ${lv}`, UI.accent, 70);
+      fx.banner(lv >= 100 ? 'MAX LEVEL' : 'LEVEL UP', `LV ${lv}`, UI.accent, 70, 0, 'sky');
       audio.fanfare('levelUp');
     }
   }

@@ -20,6 +20,14 @@ export interface NewsItem {
 
 export const NEWS: readonly NewsItem[] = [
   {
+    id: '2026-10-01',
+    date: '2026.10.01',
+    title: '遊んでいる最中の帯の見出しが盤面を隠さないようにした',
+    lines: [
+      '「MAX CHAIN」「LEVEL UP」「ALL CLEAR」の帯は、盤面の真ん中ではなく上の大気圏の帯の中に細く出る。連鎖をつないでいるあいだも隕石が見える。',
+    ],
+  },
+  {
     id: '2026-09-27-4',
     date: '2026.09.27',
     title: '空中のカタマリを運んでいる途中で外れないようにした',

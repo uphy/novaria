@@ -60,3 +60,19 @@ test('新しい盤面を始めると、前の盤面の吹き出しと帯は残�
   expect(left.popups).toBe(0);
   expect(left.banner).toBe('MISSION START');
 });
+
+// 遊んでいる最中の節目（レベル・連鎖の上限・全消し）の帯が盤面の真ん中を覆うと、
+// 次の手を急ぐ場面で隕石が見えなくなる。大気圏の帯の中に出す
+test('遊んでいる最中の節目の帯は大気圏の帯に出し、始まりの帯は真ん中に出す', async ({ page }) => {
+  await startGame(page);
+  await page.waitForFunction(() => window.__novaria.fx.bannerTitle === 'MISSION START');
+  expect(await page.evaluate(() => window.__novaria.fx.bannerPlace)).toBe('center');
+
+  // 時間を進めてレベルを上限まで上げる
+  await page.evaluate(() => {
+    const game = window.__novaria.game;
+    game.frame = game.planet.rampFrames;
+  });
+  await page.waitForFunction(() => window.__novaria.fx.bannerTitle === 'MAX LEVEL');
+  expect(await page.evaluate(() => window.__novaria.fx.bannerPlace)).toBe('sky');
+});

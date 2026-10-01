@@ -38,9 +38,10 @@ interface Popup {
 /**
  * 帯の見出しを出す場所。
  * - center: 盤面の真ん中を横切る。手を止めている場面（始まり・決着・脱出）で使う
- * - sky: 大気圏の帯の中に細く出す。遊んでいる最中の節目（レベル・連鎖の上限・全消し）で使い、下の盤面を隠さない
+ * - air: いちばん高い列のすぐ上の空きに細く出す。遊んでいる最中の節目（レベル・連鎖の上限・全消し・レアメタル）で使う。
+ *   目は山のてっぺんから下を見ているので、その近くに出しつつ、積もった隕石は隠さない
  */
-export type BannerPlace = 'center' | 'sky';
+export type BannerPlace = 'center' | 'air';
 
 /**
  * 帯の見出し。始まり・惑星の到着・レベルの節目・連鎖の上限・全消し・決着に出す。
@@ -49,6 +50,8 @@ export type BannerPlace = 'center' | 'sky';
 interface Banner {
   title: string;
   place: BannerPlace;
+  /** air のときの帯の真ん中の y。出した瞬間の山の高さで決め、出ているあいだは動かさない */
+  y: number;
   /** 見出しの上に小さく出す説明 */
   sub: string;
   color: string;
@@ -582,8 +585,13 @@ export class Effects {
    * 帯の見出しを出す。出ているものがあれば入れ替える。
    * delay だけ待ってから開く（始まりは盤面が組み上がるのを待つ）
    */
-  banner(title: string, sub: string, color: string, len = 84, delay = 0, place: BannerPlace = 'center'): void {
-    this.bannerNow = { title, place, sub, color, t: -delay, len };
+  banner(title: string, sub: string, color: string, len = 84, delay = 0): void {
+    this.bannerNow = { title, place: 'center', y: 0, sub, color, t: -delay, len };
+  }
+
+  /** いちばん高い列のすぐ上（y が帯の真ん中）に、細い帯の見出しを出す。出ているものがあれば入れ替える */
+  airBanner(title: string, sub: string, color: string, y: number, len = 84): void {
+    this.bannerNow = { title, place: 'air', y, sub, color, t: 0, len };
   }
 
   /** 描いたことのある吹き出しの真ん中と幅の半分。盤面からはみ出していないかを e2e が見る */
@@ -594,6 +602,11 @@ export class Effects {
   /** いま出ている帯の見出し。e2e が見る */
   get bannerTitle(): string | null {
     return this.bannerNow?.title ?? null;
+  }
+
+  /** いま出ている山の上の帯の真ん中の y（盤面の真ん中に出ているときは null）。e2e が見る */
+  get bannerY(): number | null {
+    return this.bannerNow?.place === 'air' ? this.bannerNow.y : null;
   }
 
   /** いま出ている帯の場所。e2e が見る */
@@ -1071,9 +1084,10 @@ export class Effects {
   /**
    * 帯の見出し。盤面の幅いっぱいの暗い帯が真ん中から左右へ開き、字が右から滑り込み、
    * 最後は帯が上下から閉じて消える。揺れの外で、得点欄より後に描く。
-   * x・w は盤面の左端と幅、centerY は盤面の真ん中に出すときの y、skyY は大気圏の帯に出すときの y。
-   * 大気圏の帯の中の帯は細く薄くして、浮いているカタマリが透けて見えるようにする。
-   * DANGER の札と同じ場所なので、滅亡の数え上げのあいだ（hideSky）は描かない
+   * x・w は盤面の左端と幅、centerY は盤面の真ん中に出すときの y、skyY は air の帯を寄せられるいちばん上の y
+   * （大気圏の帯の下寄り。山が高くて空きが無いときはここに出す）。
+   * air の帯は細く薄くして、降ってくる隕石や浮いているカタマリが透けて見えるようにする。
+   * 滅亡の数え上げのあいだ（hideAir）は山が大気圏まで届いていて DANGER の札と重なるので、air の帯は描かない
    */
   drawBanner(
     ctx: CanvasRenderingContext2D,
@@ -1082,15 +1096,15 @@ export class Effects {
     centerY: number,
     skyY: number,
     cell: number,
-    hideSky: boolean,
+    hideAir: boolean,
   ): void {
     const b = this.bannerNow;
     if (!b || b.t < 0) return;
-    const sky = b.place === 'sky';
-    if (sky && hideSky) return;
-    const cy = sky ? skyY : centerY;
-    // 大気圏の帯は 2 マスぶんで、左上に練習のヒントの方針が出る。その下に収まる大きさにする
-    const scale = sky ? 0.6 : 1;
+    const air = b.place === 'air';
+    if (air && hideAir) return;
+    const cy = air ? Math.max(b.y, skyY) : centerY;
+    // 大気圏の帯（2 マスぶん、左上に練習のヒントの方針）に寄せても収まる大きさにする
+    const scale = air ? 0.6 : 1;
     const open = Math.min(1, b.t / 9);
     const openE = 1 - (1 - open) * (1 - open);
     const close = Math.max(0, (b.t - (b.len - 10)) / 10);
@@ -1102,7 +1116,7 @@ export class Effects {
 
     ctx.save();
     // 帯。真ん中が濃く、上下の縁に色の線を引く
-    ctx.fillStyle = sky ? 'rgba(3,4,16,0.42)' : 'rgba(3,4,16,0.74)';
+    ctx.fillStyle = air ? 'rgba(3,4,16,0.42)' : 'rgba(3,4,16,0.74)';
     ctx.fillRect(bx, top, bw, h);
     ctx.fillStyle = b.color;
     ctx.fillRect(bx, top, bw, 2);
@@ -1149,7 +1163,7 @@ export class Effects {
     ctx.globalAlpha = fade;
 
     if (b.sub) {
-      ctx.font = `800 ${Math.max(9, Math.round(cell * 0.26 * (sky ? 0.75 : 1)))}px ${DISPLAY}`;
+      ctx.font = `800 ${Math.max(9, Math.round(cell * 0.26 * (air ? 0.75 : 1)))}px ${DISPLAY}`;
       spacing(ctx, Math.max(2, cell * 0.08));
       ctx.fillStyle = b.color;
       ctx.fillText(b.sub, cx, cy - h * 0.2);

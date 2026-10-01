@@ -364,7 +364,7 @@ export class View {
     if (hint?.arrow) this.drawHintPolicy(ctx, hint.arrow, game.frame);
     this.drawBoost(ctx, boostHeld, game.frame);
     // 帯の見出しは揺れの外で出す。手を止めている場面は盤面の真ん中より少し上、
-    // 遊んでいる最中の節目は大気圏の帯の下寄り（左上の方針の札にかからない）
+    // 遊んでいる最中の節目は山のすぐ上。寄せられるのは大気圏の帯の下寄りまで（左上の方針の札にかからない）
     const atmoTop = this.rowTop(VISIBLE_ROWS + ATMOSPHERE_ROWS - 1);
     const skyY = Math.round(atmoTop + L.cell * 1.15);
     fx.drawBanner(ctx, L.fieldX, L.fieldW, this.rowTop(7) + L.cell / 2, skyY, L.cell, danger > 0);

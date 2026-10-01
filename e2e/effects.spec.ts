@@ -62,11 +62,14 @@ test('新しい盤面を始めると、前の盤面の吹き出しと帯は残�
 });
 
 // 遊んでいる最中の節目（レベル・連鎖の上限・全消し）の帯が盤面の真ん中を覆うと、
-// 次の手を急ぐ場面で隕石が見えなくなる。大気圏の帯の中に出す
-test('遊んでいる最中の節目の帯は大気圏の帯に出し、始まりの帯は真ん中に出す', async ({ page }) => {
+// 次の手を急ぐ場面で隕石が見えなくなる。大気圏の帯に出すと、山を見ている目にはほとんど入らなかった。
+// いちばん高い列のすぐ上の空きに出す
+test('遊んでいる最中の節目の帯は山のすぐ上に出し、始まりの帯は真ん中に出す', async ({ page }) => {
   await startGame(page);
   await page.waitForFunction(() => window.__novaria.fx.bannerTitle === 'MISSION START');
   expect(await page.evaluate(() => window.__novaria.fx.bannerPlace)).toBe('center');
+  // いちばん高い列は 4 段
+  await page.evaluate(() => window.__novaria.setColumns([[0, 1, 2, 3], [1, 2]]));
 
   // 時間を進めてレベルを上限まで上げる
   await page.evaluate(() => {
@@ -74,7 +77,14 @@ test('遊んでいる最中の節目の帯は大気圏の帯に出し、始ま�
     game.frame = game.planet.rampFrames;
   });
   await page.waitForFunction(() => window.__novaria.fx.bannerTitle === 'MAX LEVEL');
-  expect(await page.evaluate(() => window.__novaria.fx.bannerPlace)).toBe('sky');
+  expect(await page.evaluate(() => window.__novaria.fx.bannerPlace)).toBe('air');
+  const { y, stackTop, cell } = await page.evaluate(() => {
+    const { fx, view } = window.__novaria;
+    return { y: fx.bannerY!, stackTop: view.rowTop(3), cell: view.layout.cell };
+  });
+  // 帯の下の縁が山のてっぺんにかからず、1 マス半より離れない
+  expect(y + cell * 0.6).toBeLessThanOrEqual(stackTop + 1);
+  expect(stackTop - y).toBeLessThan(cell * 1.5);
 });
 
 /** 山の高いところにレアメタルを乗せた列。点火するとレアメタルごと宇宙へ出る */
@@ -101,7 +111,7 @@ test('レアメタルを打ち上げたことがないうちは、降ってき�
   await startGame(page);
   await dropRareMetal(page);
   await page.waitForFunction(() => window.__novaria.fx.bannerTitle === 'RARE METAL');
-  expect(await page.evaluate(() => window.__novaria.fx.bannerPlace)).toBe('sky');
+  expect(await page.evaluate(() => window.__novaria.fx.bannerPlace)).toBe('air');
 
   // 打ち上げたら覚えて、次からは出さない
   await page.evaluate((c) => window.__novaria.setColumns(c), RARE_LAUNCH);

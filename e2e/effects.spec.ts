@@ -42,3 +42,21 @@ test('CPU 戦では相手が帯の見出しで出る', async ({ page }) => {
   await page.evaluate(() => window.__novaria.startVersus('normal'));
   await page.waitForFunction(() => window.__novaria.fx.bannerTitle === 'VS CPU');
 });
+
+// 惑星めぐりで次の惑星へ渡ると、前の惑星で出した「10 CHAIN」や「+3」が新しい盤面の出だしに残っていた
+test('新しい盤面を始めると、前の盤面の吹き出しと帯は残らない', async ({ page }) => {
+  await startGame(page);
+  await page.evaluate(() => {
+    const { fx, view } = window.__novaria;
+    fx.chain(view.colLeft(4), view.rowTop(12), 10, '#ff9ad8', 50);
+    fx.popup(view.colLeft(4), view.rowTop(13), '+3', '#bfe9ff', 26);
+    fx.banner('ESCAPE', '脱出', '#ffffff', 120);
+    window.__novaria.start();
+  });
+  const left = await page.evaluate(() => ({
+    popups: window.__novaria.fx.popupCount,
+    banner: window.__novaria.fx.bannerTitle,
+  }));
+  expect(left.popups).toBe(0);
+  expect(left.banner).toBe('MISSION START');
+});

@@ -1355,7 +1355,7 @@ function beginPlay(started: Game): void {
   ending = false;
   finale = null;
   margin = null;
-  fx.resetShow();
+  fx.clear();
   view.lightsOn();
   wasDanger = false;
   wasWarn = false;

@@ -282,6 +282,11 @@ export class Effects {
     return this.rivalCrown;
   }
 
+  /** いま出ている吹き出しの数。新しい盤面に前の盤面の字が残っていないかを e2e が見る */
+  get popupCount(): number {
+    return this.popups.length;
+  }
+
   /** いま出ている粒の数。上限を超えていないかを e2e が見る */
   get particleCount(): number {
     return this.particles.length;
@@ -605,7 +610,30 @@ export class Effects {
     this.crownOff = true;
   }
 
-  /** 決着の演出を片付ける。新しい盤面を始めるときに呼ぶ */
+  /**
+   * 盤面に重ねたものをすべて片付ける。新しい盤面を始めるときに呼ぶ。
+   * 惑星めぐりで次の惑星へ渡ると、前の盤面の吹き出しや帯が新しい盤面の出だしに残っていた
+   */
+  clear(): void {
+    this.particles = [];
+    this.popups = [];
+    this.rings = [];
+    this.streaks = [];
+    this.flares = [];
+    this.beams = [];
+    this.bannerNow = null;
+    this.tracers = [];
+    this.impacts = [];
+    this.hit = 0;
+    this.hitCount = 0;
+    this.hitCols = [];
+    this.landed = 0;
+    this.shake = 0;
+    this.flash = 0;
+    this.resetShow();
+  }
+
+  /** 決着の演出を片付ける */
   resetShow(): void {
     this.show = null;
     this.rockets = [];

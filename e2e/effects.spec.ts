@@ -76,3 +76,39 @@ test('遊んでいる最中の節目の帯は大気圏の帯に出し、始ま�
   await page.waitForFunction(() => window.__novaria.fx.bannerTitle === 'MAX LEVEL');
   expect(await page.evaluate(() => window.__novaria.fx.bannerPlace)).toBe('sky');
 });
+
+/** 山の高いところにレアメタルを乗せた列。点火するとレアメタルごと宇宙へ出る */
+const RARE_LAUNCH: number[][] = [
+  [
+    ...Array.from({ length: 7 }, (_, i) => (i % 2 === 0 ? 0 : 7)),
+    1,
+    1,
+    1,
+    10,
+  ],
+];
+
+/** 次に隕石を降らせるときにレアメタルを落とす */
+async function dropRareMetal(page: import('@playwright/test').Page): Promise<void> {
+  await page.evaluate(() => {
+    (window.__novaria.game as unknown as { rareTimer: number }).rareTimer = 1;
+  });
+}
+
+// レアメタルは取り方を知らないと最下段に溜まるだけになる。
+// 一度も打ち上げたことのない端末では、降ってきたときに取り方を帯で出す
+test('レアメタルを打ち上げたことがないうちは、降ってきたときに取り方を大気圏の帯に出す', async ({ page }) => {
+  await startGame(page);
+  await dropRareMetal(page);
+  await page.waitForFunction(() => window.__novaria.fx.bannerTitle === 'RARE METAL');
+  expect(await page.evaluate(() => window.__novaria.fx.bannerPlace)).toBe('sky');
+
+  // 打ち上げたら覚えて、次からは出さない
+  await page.evaluate((c) => window.__novaria.setColumns(c), RARE_LAUNCH);
+  await page.waitForFunction(() => window.__novaria.game.launched.rare > 0);
+  await page.evaluate(() => window.__novaria.start());
+  await page.waitForFunction(() => window.__novaria.fx.bannerTitle === 'MISSION START');
+  await dropRareMetal(page);
+  await page.waitForFunction(() => window.__novaria.game.ground.some((col) => col[0]?.kind === 10));
+  expect(await page.evaluate(() => window.__novaria.fx.bannerTitle)).not.toBe('RARE METAL');
+});

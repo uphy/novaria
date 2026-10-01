@@ -1079,7 +1079,8 @@ export class View {
         fx.ember(x + L.cell / 2, y + L.cell * 0.35, heat, L.cell * 0.6);
       }
     }
-    if (isRareMetal(kind)) opts.shimmer = 0.5 + 0.5 * Math.sin(game.frame * 0.25);
+    // 照り返しは 1.5 秒ごとに 0.4 秒かけて横切る。列ごとにずらして、揃って光らないようにする
+    if (isRareMetal(kind)) opts.glint = ((game.frame + col * 23) % 90) / 24;
     drawTile(ctx, kind, x, y, L.cell, opts);
   }
 

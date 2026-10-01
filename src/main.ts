@@ -44,6 +44,7 @@ import { openMatchSocket } from './online/socket';
 import { backdropHtml, skyHtml } from './render/sky';
 import { NEWS, isUnread, markNewsRead, unreadNews } from './render/news';
 import { setUpUpdates, takeUpdatedMark, updateCheckCount } from './render/update';
+import { knowsRareMetal, learnRareMetal } from './render/tips';
 import { View } from './render/view';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -843,7 +844,7 @@ function privacyHtml(): string {
       <h1>扱う情報</h1>
       <div class="panel-body">
         <h2 class="section">この端末にだけ残すもの</h2>
-        <p class="sub">遊び手の id（初めて開いたときに作る無作為の番号）、名前、自己ベスト、惑星めぐりの到達、対戦の戦績（相手の名前ごとの勝ち負け）、お知らせをどこまで読んだかの印、音の切り替え。ブラウザのサイトデータを消すと消える。</p>
+        <p class="sub">遊び手の id（初めて開いたときに作る無作為の番号）、名前、自己ベスト、惑星めぐりの到達、対戦の戦績（相手の名前ごとの勝ち負け）、お知らせをどこまで読んだかの印、レアメタルを打ち上げたことがあるかの印、音の切り替え。ブラウザのサイトデータを消すと消える。</p>
         <h2 class="section">ランキングに送るもの</h2>
         <p class="sub">名前を決めた人の 1 人用の結果だけ。id・名前・スコア・打ち上げ数・最大連続点火・時間・送った時刻を残す。表に出るのは上位 50 人の名前とスコアで、id は誰にも見せない。</p>
         <p class="sub">送りすぎを止めるため、接続元の IP アドレスを日付と混ぜて元に戻せない形（ハッシュ）にしたものも残す。IP アドレスそのものは残さない。</p>
@@ -1921,6 +1922,7 @@ function step(): void {
     fx.addShake(1.5 + Math.min(10, ev.screenOut.length));
     // レアメタルは 1 個 10,000 点。得点の 1 割を超える 1 手なので、ここだけ別に出す
     if (ev.screenOutRare > 0) {
+      learnRareMetal();
       fx.popup(
         L.fieldX + L.fieldW / 2,
         view.rowTop(VISIBLE_ROWS - 2),
@@ -1956,6 +1958,11 @@ function step(): void {
       fx.burst(view.colLeft(ev.rareMetal) + L.cell / 2, view.rowTop(r) + L.cell / 2, Kind.Spark, 4);
     }
     fx.popup(view.colLeft(ev.rareMetal) + L.cell / 2, view.rowTop(8), 'レアメタル', '#ff9ad8', 26);
+    // 取り方を知らないと、壊せないマスが最下段に溜まるだけになる。
+    // 一度も打ち上げたことのない端末では、降ってきたたびに取り方を出す（遊びを止めない大気圏の帯）
+    if (!knowsRareMetal()) {
+      fx.banner('RARE METAL', '山の上まで運び、その下で点火して打ち上げる', '#ff9ad8', 210, 0, 'sky');
+    }
   }
   if (ev.landed > 0) audio.land(ev.landed, ev.lumpLanded > 0);
   if (ev.reverted > 0) audio.revert(ev.reverted);

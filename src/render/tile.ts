@@ -1,5 +1,5 @@
 import { Glyph, LOOKS } from './theme';
-import { Kind } from '../core/types';
+import { Kind, isRareMetal } from '../core/types';
 
 /** 角の丸い四角を引く */
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -115,8 +115,8 @@ export interface TileOptions {
   burn?: number;
   /** 炎の揺らぎの駒番号。数フレームごとに進めると火が動いて見える */
   burnPhase?: number;
-  /** レアメタルの明滅 */
-  shimmer?: number;
+  /** レアメタルの照り返しの帯がどこまで横切ったか（0〜1。1 以上で出さない） */
+  glint?: number;
   alpha?: number;
 }
 
@@ -303,12 +303,29 @@ export function drawTile(
     ctx.stroke();
   }
 
-  if (opts.shimmer) {
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.fillStyle = `rgba(255,255,255,${0.35 * opts.shimmer})`;
+  // レアメタルの照り返し。斜めの光の帯が面を横切る。
+  // 面ぜんたいを明滅させると、点火したての隕石の光りと見分けがつかなかった
+  if (opts.glint !== undefined && opts.glint < 1) {
+    ctx.save();
     roundRect(ctx, x + pad, y + pad, w, w, r);
-    ctx.fill();
-    ctx.globalCompositeOperation = 'source-over';
+    ctx.clip();
+    ctx.globalCompositeOperation = 'lighter';
+    const at = x + pad - w * 0.6 + opts.glint * w * 2.2;
+    for (const [off, width, a] of [
+      [0, 0.22, 0.55],
+      [0.3, 0.08, 0.4],
+    ] as const) {
+      const bx = at + off * w;
+      ctx.fillStyle = `rgba(255,255,255,${a})`;
+      ctx.beginPath();
+      ctx.moveTo(bx, y + pad + w);
+      ctx.lineTo(bx + width * w, y + pad + w);
+      ctx.lineTo(bx + width * w + w * 0.5, y + pad);
+      ctx.lineTo(bx + w * 0.5, y + pad);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   if (opts.flash) {
@@ -349,10 +366,21 @@ function paintTile(
   const cy = y + size / 2;
   const dust = kind === Kind.Dust;
 
-  // 地の色。上が明るく下が暗い
+  const metal = isRareMetal(kind);
+  // 地の色。上が明るく下が暗い。
+  // レアメタルは磨いた金属の地にする。真ん中に暗い帯を挟むと、景色を映した鏡面に見える。
+  // 同じ色味の隕石（火花と五角）と、色ではなく質感で見分けられるようにする
   const grad = ctx.createLinearGradient(x, y, x, y + size);
-  grad.addColorStop(0, look.light);
-  grad.addColorStop(1, look.dark);
+  if (metal) {
+    grad.addColorStop(0, '#fbfcff');
+    grad.addColorStop(0.42, '#b8c1d4');
+    grad.addColorStop(0.5, '#5c6580');
+    grad.addColorStop(0.58, '#d7deec');
+    grad.addColorStop(1, '#6d7690');
+  } else {
+    grad.addColorStop(0, look.light);
+    grad.addColorStop(1, look.dark);
+  }
   ctx.fillStyle = grad;
   roundRect(ctx, x + pad, y + pad, w, w, r);
   ctx.fill();
@@ -387,7 +415,18 @@ function paintTile(
   ctx.stroke();
   ctx.restore();
 
-  // 縁
+  // 縁。レアメタルは種類の色で太く縁取り、内側に細い光を返す（はめ込んだ板に見える）
+  if (metal) {
+    const rim = Math.max(2, size * 0.1);
+    ctx.strokeStyle = look.dark;
+    ctx.lineWidth = rim;
+    roundRect(ctx, x + pad + rim / 2, y + pad + rim / 2, w - rim, w - rim, r * 0.8);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = Math.max(1, size * 0.025);
+    roundRect(ctx, x + pad + rim, y + pad + rim, w - rim * 2, w - rim * 2, r * 0.6);
+    ctx.stroke();
+  }
   ctx.strokeStyle = look.ink;
   ctx.lineWidth = Math.max(1, size * EDGE);
   roundRect(ctx, x + pad, y + pad, w, w, r);
@@ -447,11 +486,18 @@ function paintTile(
     drawGlyph(ctx, look.glyph, cx, gy + Math.max(1, size * 0.03), size);
     if (stroked) ctx.stroke();
     else ctx.fill();
-    ctx.fillStyle = look.ink;
-    ctx.strokeStyle = look.ink;
+    // レアメタルの柄は種類の色の宝石。金属の地の上で色だけが浮く
+    ctx.fillStyle = metal ? look.dark : look.ink;
+    ctx.strokeStyle = metal ? look.dark : look.ink;
     drawGlyph(ctx, look.glyph, cx, gy, size);
     if (stroked) ctx.stroke();
     else ctx.fill();
+    if (metal) {
+      ctx.lineWidth = Math.max(1, size * 0.025);
+      ctx.strokeStyle = look.ink;
+      drawGlyph(ctx, look.glyph, cx, gy, size);
+      ctx.stroke();
+    }
   }
 }
 

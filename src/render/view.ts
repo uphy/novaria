@@ -363,8 +363,11 @@ export class View {
     if (hint) this.drawHintTag(ctx, hint.speed);
     if (hint?.arrow) this.drawHintPolicy(ctx, hint.arrow, game.frame);
     this.drawBoost(ctx, boostHeld, game.frame);
-    // 帯の見出しは盤面の真ん中より少し上に、揺れの外で出す
-    fx.drawBanner(ctx, L.fieldX, L.fieldW, this.rowTop(7) + L.cell / 2, L.cell);
+    // 帯の見出しは揺れの外で出す。手を止めている場面は盤面の真ん中より少し上、
+    // 遊んでいる最中の節目は山のすぐ上。寄せられるのは大気圏の帯の下寄りまで（左上の方針の札にかからない）
+    const atmoTop = this.rowTop(VISIBLE_ROWS + ATMOSPHERE_ROWS - 1);
+    const skyY = Math.round(atmoTop + L.cell * 1.15);
+    fx.drawBanner(ctx, L.fieldX, L.fieldW, this.rowTop(7) + L.cell / 2, skyY, L.cell, danger > 0);
     // 攻撃の弾は得点の並びと相手のミニ盤面の上を通るので、盤面の粒とは分けてここで描く
     fx.drawOverlay(ctx);
     fx.drawFlash(ctx, L.width, L.height);
@@ -1076,7 +1079,8 @@ export class View {
         fx.ember(x + L.cell / 2, y + L.cell * 0.35, heat, L.cell * 0.6);
       }
     }
-    if (isRareMetal(kind)) opts.shimmer = 0.5 + 0.5 * Math.sin(game.frame * 0.25);
+    // 照り返しは 1.5 秒ごとに 0.4 秒かけて横切る。列ごとにずらして、揃って光らないようにする
+    if (isRareMetal(kind)) opts.glint = ((game.frame + col * 23) % 90) / 24;
     drawTile(ctx, kind, x, y, L.cell, opts);
   }
 

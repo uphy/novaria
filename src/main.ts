@@ -44,6 +44,7 @@ import { openMatchSocket } from './online/socket';
 import { backdropHtml, skyHtml } from './render/sky';
 import { NEWS, isUnread, markNewsRead, unreadNews } from './render/news';
 import { setUpUpdates, takeUpdatedMark, updateCheckCount } from './render/update';
+import { knowsRareMetal, learnRareMetal } from './render/tips';
 import { View } from './render/view';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -843,7 +844,7 @@ function privacyHtml(): string {
       <h1>扱う情報</h1>
       <div class="panel-body">
         <h2 class="section">この端末にだけ残すもの</h2>
-        <p class="sub">遊び手の id（初めて開いたときに作る無作為の番号）、名前、自己ベスト、惑星めぐりの到達、対戦の戦績（相手の名前ごとの勝ち負け）、お知らせをどこまで読んだかの印、音の切り替え。ブラウザのサイトデータを消すと消える。</p>
+        <p class="sub">遊び手の id（初めて開いたときに作る無作為の番号）、名前、自己ベスト、惑星めぐりの到達、対戦の戦績（相手の名前ごとの勝ち負け）、お知らせをどこまで読んだかの印、レアメタルを打ち上げたことがあるかの印、音の切り替え。ブラウザのサイトデータを消すと消える。</p>
         <h2 class="section">ランキングに送るもの</h2>
         <p class="sub">名前を決めた人の 1 人用の結果だけ。id・名前・スコア・打ち上げ数・最大連続点火・時間・送った時刻を残す。表に出るのは上位 50 人の名前とスコアで、id は誰にも見せない。</p>
         <p class="sub">送りすぎを止めるため、接続元の IP アドレスを日付と混ぜて元に戻せない形（ハッシュ）にしたものも残す。IP アドレスそのものは残さない。</p>
@@ -1887,11 +1888,13 @@ function step(): void {
     const py = view.rowTop(mid.row);
     if (ig.combo >= 2) {
       const color = ig.combo >= 6 ? '#ff9ad8' : ig.combo >= 4 ? '#ffb347' : UI.combo;
-      fx.chain(px, py, ig.combo, color, 24 + Math.min(26, ig.combo * 3));
-      // 倍率の上限に届いた瞬間だけ帯で知らせる。ここから先は何連鎖しても倍率は増えない
+      // 倍率の上限に届いた瞬間だけ帯で知らせる。ここから先は何連鎖しても倍率は増えない。
+      // 次の点火を急ぐ場面なので、帯は大気圏の中に出し、同じ数を言う連鎖の吹き出しは出さない
       if (ig.combo === SCORE.maxComboMultiplier) {
-        fx.banner('MAX CHAIN', `SCORE ×${ig.combo}`, UI.combo, 70);
+        fx.airBanner('MAX CHAIN', `${ig.combo} CHAIN · SCORE ×${ig.combo}`, UI.combo, airBannerY(), 70);
         audio.fanfare('maxChain');
+      } else {
+        fx.chain(px, py, ig.combo, color, 24 + Math.min(26, ig.combo * 3));
       }
       fx.addShake(3 + ig.combo * 1.6);
       fx.addFlash(0.08 + ig.combo * 0.035);
@@ -1919,6 +1922,7 @@ function step(): void {
     fx.addShake(1.5 + Math.min(10, ev.screenOut.length));
     // レアメタルは 1 個 10,000 点。得点の 1 割を超える 1 手なので、ここだけ別に出す
     if (ev.screenOutRare > 0) {
+      learnRareMetal();
       fx.popup(
         L.fieldX + L.fieldW / 2,
         view.rowTop(VISIBLE_ROWS - 2),
@@ -1953,7 +1957,13 @@ function step(): void {
     for (let r = 0; r < 14; r += 1) {
       fx.burst(view.colLeft(ev.rareMetal) + L.cell / 2, view.rowTop(r) + L.cell / 2, Kind.Spark, 4);
     }
-    fx.popup(view.colLeft(ev.rareMetal) + L.cell / 2, view.rowTop(8), 'レアメタル', '#ff9ad8', 26);
+    // 取り方を知らないと、壊せないマスが最下段に溜まるだけになる。
+    // 一度も打ち上げたことのない端末では、降ってきたたびに取り方を山のすぐ上の帯で出す（同じことを言う吹き出しは省く）
+    if (!knowsRareMetal()) {
+      fx.airBanner('RARE METAL', '山の上まで運び、その下で点火して打ち上げる', '#ff9ad8', airBannerY(), 210);
+    } else {
+      fx.popup(view.colLeft(ev.rareMetal) + L.cell / 2, view.rowTop(8), 'レアメタル', '#ff9ad8', 26);
+    }
   }
   if (ev.landed > 0) audio.land(ev.landed, ev.lumpLanded > 0);
   if (ev.reverted > 0) audio.revert(ev.reverted);
@@ -1967,7 +1977,7 @@ function step(): void {
   if (ev.screenClear) {
     audio.screenClear();
     fx.addFlash(1);
-    fx.banner('ALL CLEAR', `全消し +${(game.cols * 1000).toLocaleString()}`, '#ffffff');
+    fx.airBanner('ALL CLEAR', `全消し +${(game.cols * 1000).toLocaleString()}`, '#ffffff', airBannerY());
   }
   if (ev.danger) audio.danger(game.frame, game.dangerRatio());
   else audio.safe();
@@ -1981,7 +1991,7 @@ function step(): void {
   if (lv > levelMark) {
     levelMark = lv;
     if (!ev.gameOver) {
-      fx.banner(lv >= 100 ? 'MAX LEVEL' : 'LEVEL UP', `LV ${lv}`, UI.accent, 70);
+      fx.airBanner(lv >= 100 ? 'MAX LEVEL' : 'LEVEL UP', `LV ${lv}`, UI.accent, airBannerY(), 70);
       audio.fanfare('levelUp');
     }
   }
@@ -2137,6 +2147,15 @@ function measureMargin(): typeof margin {
 }
 
 /** 列の左右の位置（-1 が左端、1 が右端）。音をその列の側から鳴らす */
+/**
+ * 遊んでいる最中の帯の見出しを置く高さ（帯の真ん中の y）。いちばん高い列のてっぺんの少し上。
+ * 目は山のてっぺんから下を見ているので、大気圏の帯に出すとほとんど目に入らなかった
+ */
+function airBannerY(): number {
+  const top = Math.max(0, ...game.ground.map((col) => col.length));
+  return view.rowTop(top - 1) - Math.round(view.layout.cell * 0.9);
+}
+
 function columnPan(col: number): number {
   return game.cols > 1 ? (col / (game.cols - 1)) * 2 - 1 : 0;
 }

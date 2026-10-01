@@ -36,11 +36,22 @@ interface Popup {
 }
 
 /**
- * 盤面の真ん中を横切る帯の見出し。始まり・惑星の到着・レベルの節目・連鎖の上限・全消し・決着に出す。
+ * 帯の見出しを出す場所。
+ * - center: 盤面の真ん中を横切る。手を止めている場面（始まり・決着・脱出）で使う
+ * - air: いちばん高い列のすぐ上の空きに細く出す。遊んでいる最中の節目（レベル・連鎖の上限・全消し・レアメタル）で使う。
+ *   目は山のてっぺんから下を見ているので、その近くに出しつつ、積もった隕石は隠さない
+ */
+export type BannerPlace = 'center' | 'air';
+
+/**
+ * 帯の見出し。始まり・惑星の到着・レベルの節目・連鎖の上限・全消し・決着に出す。
  * 1 度に 1 本だけで、新しいものが来たら入れ替える
  */
 interface Banner {
   title: string;
+  place: BannerPlace;
+  /** air のときの帯の真ん中の y。出した瞬間の山の高さで決め、出ているあいだは動かさない */
+  y: number;
   /** 見出しの上に小さく出す説明 */
   sub: string;
   color: string;
@@ -575,7 +586,12 @@ export class Effects {
    * delay だけ待ってから開く（始まりは盤面が組み上がるのを待つ）
    */
   banner(title: string, sub: string, color: string, len = 84, delay = 0): void {
-    this.bannerNow = { title, sub, color, t: -delay, len };
+    this.bannerNow = { title, place: 'center', y: 0, sub, color, t: -delay, len };
+  }
+
+  /** いちばん高い列のすぐ上（y が帯の真ん中）に、細い帯の見出しを出す。出ているものがあれば入れ替える */
+  airBanner(title: string, sub: string, color: string, y: number, len = 84): void {
+    this.bannerNow = { title, place: 'air', y, sub, color, t: 0, len };
   }
 
   /** 描いたことのある吹き出しの真ん中と幅の半分。盤面からはみ出していないかを e2e が見る */
@@ -586,6 +602,16 @@ export class Effects {
   /** いま出ている帯の見出し。e2e が見る */
   get bannerTitle(): string | null {
     return this.bannerNow?.title ?? null;
+  }
+
+  /** いま出ている山の上の帯の真ん中の y（盤面の真ん中に出ているときは null）。e2e が見る */
+  get bannerY(): number | null {
+    return this.bannerNow?.place === 'air' ? this.bannerNow.y : null;
+  }
+
+  /** いま出ている帯の場所。e2e が見る */
+  get bannerPlace(): BannerPlace | null {
+    return this.bannerNow?.place ?? null;
   }
 
   addShake(n: number): void {
@@ -1058,15 +1084,31 @@ export class Effects {
   /**
    * 帯の見出し。盤面の幅いっぱいの暗い帯が真ん中から左右へ開き、字が右から滑り込み、
    * 最後は帯が上下から閉じて消える。揺れの外で、得点欄より後に描く。
-   * box は盤面の左端・幅・帯の真ん中の y・マスの大きさ
+   * x・w は盤面の左端と幅、centerY は盤面の真ん中に出すときの y、skyY は air の帯を寄せられるいちばん上の y
+   * （大気圏の帯の下寄り。山が高くて空きが無いときはここに出す）。
+   * air の帯は細く薄くして、降ってくる隕石や浮いているカタマリが透けて見えるようにする。
+   * 滅亡の数え上げのあいだ（hideAir）は山が大気圏まで届いていて DANGER の札と重なるので、air の帯は描かない
    */
-  drawBanner(ctx: CanvasRenderingContext2D, x: number, w: number, cy: number, cell: number): void {
+  drawBanner(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    w: number,
+    centerY: number,
+    skyY: number,
+    cell: number,
+    hideAir: boolean,
+  ): void {
     const b = this.bannerNow;
     if (!b || b.t < 0) return;
+    const air = b.place === 'air';
+    if (air && hideAir) return;
+    const cy = air ? Math.max(b.y, skyY) : centerY;
+    // 大気圏の帯（2 マスぶん、左上に練習のヒントの方針）に寄せても収まる大きさにする
+    const scale = air ? 0.6 : 1;
     const open = Math.min(1, b.t / 9);
     const openE = 1 - (1 - open) * (1 - open);
     const close = Math.max(0, (b.t - (b.len - 10)) / 10);
-    const h = cell * 1.9 * (1 - close * close);
+    const h = cell * 1.9 * scale * (1 - close * close);
     if (h <= 1) return;
     const bw = w * openE;
     const bx = x + (w - bw) / 2;
@@ -1074,7 +1116,7 @@ export class Effects {
 
     ctx.save();
     // 帯。真ん中が濃く、上下の縁に色の線を引く
-    ctx.fillStyle = 'rgba(3,4,16,0.74)';
+    ctx.fillStyle = air ? 'rgba(3,4,16,0.42)' : 'rgba(3,4,16,0.74)';
     ctx.fillRect(bx, top, bw, h);
     ctx.fillStyle = b.color;
     ctx.fillRect(bx, top, bw, 2);
@@ -1096,7 +1138,7 @@ export class Effects {
     ctx.globalAlpha = 0.35 * (1 - close);
     ctx.strokeStyle = b.color;
     ctx.lineWidth = 2;
-    const chev = cell * 0.22;
+    const chev = cell * 0.22 * scale;
     for (let i = 0; i < 3; i++) {
       const off = ((b.t * 0.6 + i * chev * 1.4) % (chev * 4.2));
       for (const [ax, d] of [
@@ -1121,13 +1163,13 @@ export class Effects {
     ctx.globalAlpha = fade;
 
     if (b.sub) {
-      ctx.font = `800 ${Math.max(10, Math.round(cell * 0.26))}px ${DISPLAY}`;
+      ctx.font = `800 ${Math.max(9, Math.round(cell * 0.26 * (air ? 0.75 : 1)))}px ${DISPLAY}`;
       spacing(ctx, Math.max(2, cell * 0.08));
       ctx.fillStyle = b.color;
       ctx.fillText(b.sub, cx, cy - h * 0.2);
       spacing(ctx, 0);
     }
-    const size = Math.round(Math.min(cell * 0.82, (w * 0.8) / Math.max(4, b.title.length * 0.72)));
+    const size = Math.round(Math.min(cell * 0.82 * scale, (w * 0.8) / Math.max(4, b.title.length * 0.72)));
     ctx.font = `italic 900 ${size}px ${DISPLAY}`;
     spacing(ctx, Math.max(1, size * 0.06));
     const ty = cy + (b.sub ? h * 0.3 : size * 0.35);

@@ -222,7 +222,8 @@ canvas.addEventListener('pointermove', (e) => {
   const { y } = pointerPos(e);
   const dy = t.lastY - y; // 画面の上へ動かすと row が増える
   t.lastY = y;
-  game.dragBy(dy / view.layout.cell, e.pointerId);
+  // 入れ替わった相手の滑りは、次の tick を待たずにここで始める（`Game.dragBy` の説明を見る）
+  for (const m of game.dragBy(dy / view.layout.cell, e.pointerId)) fx.slide(m.swapped, m.up);
 });
 
 function endTouch(e: PointerEvent): void {

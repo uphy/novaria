@@ -826,7 +826,11 @@ export class View {
 
     for (const cell of game.allCells()) {
       if (held.has(cell.meteor.id)) continue;
-      this.drawOne(ctx, fx, cell.col, cell.row, cell.meteor, game);
+      // 指の隕石と入れ替わった相手は、元いたマスから滑ってくる（絵だけ）。
+      // 滑っているあいだだけ小数の高さになるので、画素に揃えて焼いた絵をそのまま貼る
+      const slide = fx.slideOffset(cell.meteor.id);
+      const row = slide === 0 ? cell.row : cell.row + Math.round(slide * L.cell) / L.cell;
+      this.drawOne(ctx, fx, cell.col, row, cell.meteor, game);
     }
 
     for (const drag of drags) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Game } from '../../src/core/game';
 import { Kind } from '../../src/core/types';
-import { IGNITION_GRACE_FRAMES } from '../../src/core/constants';
+import { DRAG_HYSTERESIS_ROWS, IGNITION_GRACE_FRAMES } from '../../src/core/constants';
 
 function meteor(kind: Kind, id = Math.floor(Math.random() * 1e6)) {
   return { id, kind, revert: 0, fromAttack: false, ignitedAt: -1 };
@@ -320,5 +320,34 @@ describe('掴んでいるカタマリの形が変わっても指から離れな�
     expect(g.score).toBeGreaterThan(0);
 
     expect(g.dragPosition(1)?.meteor).toBe(held);
+  });
+});
+
+describe('入れ替わる境目のあそび', () => {
+  it('境目のあたりで指が細かく震えても、隣と行ったり来たりしない', () => {
+    const g = stillGame([0, 1, 2].map((c) => filler(4, c)));
+    g.tick();
+    const held = g.ground[0][1];
+    expect(g.grab(0, 1)).toBe(true);
+    // 半マスを越えて 1 つ上へ入れ替わる
+    g.dragBy(0.52);
+    expect(g.ground[0][2]).toBe(held);
+    // そこから数 px ぶん戻っただけでは入れ替え直さない
+    g.dragBy(-0.05);
+    g.dragBy(0.03);
+    g.dragBy(-0.06);
+    expect(g.ground[0][2]).toBe(held);
+    expect(g.tick().moves.length).toBe(1);
+    // はっきり戻せば元の位置へ戻る
+    g.dragBy(-DRAG_HYSTERESIS_ROWS - 0.05);
+    expect(g.ground[0][1]).toBe(held);
+  });
+
+  it('dragBy は起きた入れ替えを返し、入れ替わった相手の id を持つ', () => {
+    const g = stillGame([0, 1, 2].map((c) => filler(4, c)));
+    g.tick();
+    const other = g.ground[0][2];
+    expect(g.grab(0, 1)).toBe(true);
+    expect(g.dragBy(1)).toEqual([{ kind: 'ground', row: 2, up: true, finger: 0, swapped: other.id }]);
   });
 });

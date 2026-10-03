@@ -1,6 +1,7 @@
 import {
   ATTACK,
   BURN_FRAMES,
+  DRAG_HYSTERESIS_ROWS,
   NOVARIA,
   GRID_ROWS,
   IGNITION_GRACE_FRAMES,
@@ -35,10 +36,15 @@ export interface Drag {
   col: number;
   /** その列の中での添字（下から 0） */
   index: number;
-  /** マス目からのずれ（-0.5〜0.5）。描画だけに効く */
+  /** マス目からのずれ（おおよそ -0.5〜0.5）。描画だけに効く */
   offset: number;
   /** シュートのために上へ押し込んだ量（マス） */
   charge: number;
+  /**
+   * 直前に入れ替わった向き（上へ入れ替わったなら true、まだ入れ替わっていなければ null）。
+   * 戻す向きにはあそび（`DRAG_HYSTERESIS_ROWS`）を足して、境目でのちらつきを止める
+   */
+  lastSwapUp: boolean | null;
 }
 
 /** 指で 1 マス動かした操作。動かした音を鳴らすのに使う */
@@ -50,6 +56,8 @@ export interface DragMove {
   up: boolean;
   /** 動かした指 */
   finger: number;
+  /** 入れ替わって反対へ 1 マスずれた相手の隕石の id。描画が滑らせるのに使う */
+  swapped: number;
 }
 
 /** 点火が起きたことを描画側へ知らせる */
@@ -426,42 +434,62 @@ export class Game {
       const rel = Math.floor(row - lump.y);
       const i = list.findIndex((c) => c.rel === rel);
       if (i >= 0) {
-        this.drags.set(finger, { kind: 'lump', lumpId: lump.id, col, index: i, offset: 0, charge: 0 });
+        this.drags.set(finger, { kind: 'lump', lumpId: lump.id, col, index: i, offset: 0, charge: 0, lastSwapUp: null });
         return true;
       }
     }
     if (r >= 0 && r < this.ground[col].length) {
-      this.drags.set(finger, { kind: 'ground', lumpId: 0, col, index: r, offset: 0, charge: 0 });
+      this.drags.set(finger, { kind: 'ground', lumpId: 0, col, index: r, offset: 0, charge: 0, lastSwapUp: null });
       return true;
     }
     return false;
   }
 
-  /** 指の移動量（マス単位、上が正）を渡す。掴んだ隕石が列の中を上下する */
-  dragBy(deltaRows: number, finger = 0): void {
+  /**
+   * 指の移動量（マス単位、上が正）を渡す。掴んだ隕石が列の中を上下する。
+   * 返り値はこの呼び出しで起きた入れ替え（`Events.moves` にも同じものが入る）。
+   * 描画は tick を待たずにこれを見て、入れ替わった相手を滑らせ始める。
+   * tick で受け取ってから始めると、画面が 120Hz の端末では tick の無い rAF が挟まり、
+   * 相手が新しいマスに 1 度映ってから元の位置へ戻って滑って見える
+   */
+  dragBy(deltaRows: number, finger = 0): DragMove[] {
+    const moves: DragMove[] = [];
     const d = this.drags.get(finger);
-    if (!d || this.over) return;
+    if (!d || this.over) return moves;
     const list = this.dragList(d);
     if (!list) {
       this.drags.delete(finger);
-      return;
+      return moves;
     }
+    const push = (m: DragMove): void => {
+      moves.push(m);
+      this.events.moves.push(m);
+    };
     d.offset += deltaRows;
-    while (d.offset >= 0.5 && d.index + 1 < list.length) {
+    // 半マス越えたら隣と入れ替わる。直前に入れ替わった向きへ戻すときだけ、あそびのぶん余分に要る。
+    // 入れ替わった直後は offset がちょうど反対の境目（∓0.5）に来るので、あそびが無いと
+    // 指が 1px 震えるだけで入れ替え直してしまう
+    const upAt = d.lastSwapUp === false ? 0.5 + DRAG_HYSTERESIS_ROWS : 0.5;
+    const downAt = d.lastSwapUp === true ? -0.5 - DRAG_HYSTERESIS_ROWS : -0.5;
+    while (d.offset >= upAt && d.index + 1 < list.length) {
       const from = d.index;
+      const swapped = list[d.index + 1].id;
       this.swapInList(d, list, d.index, d.index + 1);
       d.index++;
       d.offset -= 1;
-      this.events.moves.push({ kind: d.kind, row: d.index, up: true, finger });
-      if (this.lockIfMatched(finger, d, from)) return;
+      d.lastSwapUp = true;
+      push({ kind: d.kind, row: d.index, up: true, finger, swapped });
+      if (this.lockIfMatched(finger, d, from)) return moves;
     }
-    while (d.offset <= -0.5 && d.index - 1 >= 0) {
+    while (d.offset <= downAt && d.index - 1 >= 0) {
       const from = d.index;
+      const swapped = list[d.index - 1].id;
       this.swapInList(d, list, d.index, d.index - 1);
       d.index--;
       d.offset += 1;
-      this.events.moves.push({ kind: d.kind, row: d.index, up: false, finger });
-      if (this.lockIfMatched(finger, d, from)) return;
+      d.lastSwapUp = false;
+      push({ kind: d.kind, row: d.index, up: false, finger, swapped });
+      if (this.lockIfMatched(finger, d, from)) return moves;
     }
     // 列の一番上をさらに上へ払うとシュート（原作どおり）
     if (d.index === list.length - 1) {
@@ -472,6 +500,7 @@ export class Game {
       }
     }
     if (d.index === 0) d.offset = Math.max(d.offset, -0.5);
+    return moves;
   }
 
   /** 指を離す。`finger` を省くとすべての指を離す */

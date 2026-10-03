@@ -187,6 +187,8 @@ export const DUSK_STEPS = [1.1, 1.46, 1.82] as const;
  * 420 個なら、いちばん派手な連鎖でも見た目が痩せずに 1 フレーム 2ms 弱で収まる
  */
 const MAX_PARTICLES = 420;
+/** 入れ替わった隣の隕石が新しいマスへ寄るまでのフレーム数（0.1 秒）。長いと指に遅れて見える */
+const SLIDE_FRAMES = 6;
 
 /**
  * 閃きの上限。光の玉は粒よりずっと広い面を塗る。上限 40 で半径も大きかったころ、
@@ -253,6 +255,12 @@ export class Effects {
   private flash = 0;
   /** 噴射の火を出したフレーム。毎フレーム出すと、上昇中ずっと 700 個ほど溜まる */
   private thrustTick = 0;
+  /**
+   * 指で運んだ隕石と入れ替わって 1 マスずれた相手の、絵だけの滑り。
+   * 盤面の上では一瞬で入れ替わるが、絵は元いた位置（from、マス単位のずれ）から
+   * 新しいマスへ数フレームで寄せる。盤面の計算には効かない
+   */
+  private slides = new Map<number, { from: number; t: number }>();
   /**
    * 決着の演出（勝ちの花火・負けの暗転・相手の勝ち名乗り）。盤面が止まっているあいだも
    * 実時間で進める（`updateShow`）。t は始まってからのフレーム数
@@ -329,6 +337,24 @@ export class Effects {
   }
 
   /** このフレームに着弾した個数を取り出す。取り出すと 0 に戻る */
+  /**
+   * 入れ替わって反対へ 1 マスずれた隕石を、元の位置から滑らせる。
+   * up は指の隕石が上へ動いたかで、相手はその逆（下へ 1 マス）へずれている。
+   * 続けて何マスも運ばれたときは、前の滑りの残りを引き継いで途切れないようにする
+   */
+  slide(meteorId: number, up: boolean): void {
+    const prev = this.slideOffset(meteorId);
+    this.slides.set(meteorId, { from: prev + (up ? 1 : -1), t: 1 });
+  }
+
+  /** 滑っている途中の隕石の、いま描くべき位置のずれ（マス単位。上が正） */
+  slideOffset(meteorId: number): number {
+    const s = this.slides.get(meteorId);
+    if (!s) return 0;
+    // 出だしが速く、終わりはゆっくり寄る
+    return s.from * s.t * s.t;
+  }
+
   takeLanded(): number {
     const n = this.landed;
     this.landed = 0;
@@ -823,6 +849,10 @@ export class Effects {
 
   update(): void {
     this.thrustTick += 1;
+    for (const [id, s] of this.slides) {
+      s.t -= 1 / SLIDE_FRAMES;
+      if (s.t <= 0) this.slides.delete(id);
+    }
     for (const p of this.particles) {
       p.x += p.vx;
       p.y += p.vy;

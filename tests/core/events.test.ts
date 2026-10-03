@@ -35,13 +35,14 @@ describe('tick と tick のあいだの操作が次の tick で届く', () => {
   it('1 マス動かすごとに moves に入る（動かしたあとの添字と向き）', () => {
     const g = quietGame(4);
     g.tick();
+    const other = g.ground[0][2];
     expect(g.grab(0, 1)).toBe(true);
     g.dragBy(1);
     g.dragBy(-1);
     const ev = g.tick();
     expect(ev.moves).toEqual([
-      { kind: 'ground', row: 2, up: true, finger: 0 },
-      { kind: 'ground', row: 1, up: false, finger: 0 },
+      { kind: 'ground', row: 2, up: true, finger: 0, swapped: other.id },
+      { kind: 'ground', row: 1, up: false, finger: 0, swapped: other.id },
     ]);
   });
 
